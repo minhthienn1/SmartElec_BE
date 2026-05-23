@@ -8,6 +8,20 @@ import { AuthGuard } from '@nestjs/passport';
 export class DevicesController {
   constructor(private readonly devicesService: DevicesService) {}
 
+  @Get('admin/all')
+  @HttpCode(HttpStatus.OK)
+  adminFindAll() {
+    // Gọi hàm lấy sạch dữ liệu, không truyền userId vào để lọc
+    return this.devicesService.adminGetAllDevices();
+  }
+
+  @Get('admin/:id')
+  @HttpCode(HttpStatus.OK)
+  adminFindOne(@Param('id', ParseIntPipe) id: number) {
+    // Lấy thẳng chi tiết theo ID mà không kiểm tra quyền sở hữu của user
+    return this.devicesService.adminGetDeviceById(id);
+  }
+
   @Post()
   @HttpCode(HttpStatus.CREATED)
   create(

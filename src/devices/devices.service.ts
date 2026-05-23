@@ -137,4 +137,32 @@ export class DevicesService {
 
     return updated;
   }
+
+  async adminGetAllDevices() {
+    return this.prisma.device.findMany({
+      orderBy: { createdAt: 'desc' },
+      // Bạn có thể include thêm thông tin user tạo đơn để admin biết đơn này của ai
+      include: {
+        chatSessions: true,
+      }
+    });
+  }
+
+  async adminGetDeviceById(id: number) {
+    const device = await this.prisma.device.findUnique({
+      where: { id },
+      include: {
+        chatSessions: {
+          orderBy: { createdAt: 'desc' },
+        },
+      },
+    });
+
+    if (!device) {
+      throw new NotFoundException('Thiết bị hoặc đơn hàng không tồn tại');
+    }
+
+    // KHÔNG CHECK quyền sở hữu userId ở đây, vì Admin có quyền xem hết
+    return device;
+  }
 }
