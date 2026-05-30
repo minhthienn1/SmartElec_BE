@@ -60,6 +60,16 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 # Firebase Service Account Key 
 serviceAccountKey.json
 service-account.json
+firebase-service-account.json
+
+# Scratch / test files
+scratch/
+test-conn.sh
+test-db.js
+
+# Embedded Flutter project (has its own git repo)
+src/flutter/
+"tài liệu zalo.md"
 
 # Database
 *.db

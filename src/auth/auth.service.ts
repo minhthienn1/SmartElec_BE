@@ -2,11 +2,17 @@ import {
   Injectable,
   ConflictException,
   UnauthorizedException,
+  NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
 import { RegisterDto } from './dto/register.dto'; // Import DTO vào đây
+import { ZaloLoginDto } from './dto/zalo-login.dto';
+import { GoogleLoginDto } from './dto/google-login.dto';
+import { SetPasswordDto } from './dto/set-password.dto';
+import { v4 as uuidv4 } from 'uuid';
+import * as admin from 'firebase-admin';
 
 @Injectable()
 export class AuthService {
@@ -93,6 +99,7 @@ export class AuthService {
       message: 'Đăng nhập thành công!',
       userId: user.id,
       role: user.role,
+      needsPassword: user.needsPassword,
       access_token: await this.jwtService.signAsync(payload),
     };
   }
@@ -118,5 +125,216 @@ export class AuthService {
     }
 
     return user;
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // 4. ĐĂNG NHẬP BẰNG ZALO (Auto-Register nếu chưa có tài khoản)
+  // ─────────────────────────────────────────────────────────────────
+  async loginWithZalo(dto: ZaloLoginDto) {
+    const { zaloId, name, avatarUrl } = dto;
+
+    // Tìm user theo zaloId
+    let user = await this.prisma.user.findUnique({
+      where: { zaloId },
+    });
+
+    let isNewUser = false;
+
+    if (!user) {
+      // ✅ AUTO-REGISTER: Tạo tài khoản mới từ thông tin Zalo
+      isNewUser = true;
+      const tempPassword = uuidv4(); // Mật khẩu tạm (random UUID)
+      const salt = await bcrypt.genSalt();
+      const hashedTempPassword = await bcrypt.hash(tempPassword, salt);
+      const tempPhone = `ZALO_${zaloId.substring(0, 15)}`; // SĐT tạm, unique
+
+      user = await this.prisma.user.create({
+        data: {
+          zaloId,
+          fullName: name || 'Người dùng Zalo',
+          avatarUrl: avatarUrl || null,
+          phoneNumber: tempPhone,
+          password: hashedTempPassword,
+          gender: 'OTHER',
+          needsPassword: true, // Đánh dấu cần đặt mật khẩu + SĐT thật
+        },
+      });
+
+      console.log(`🔵 [ZALO] Người dùng MỚI đăng ký qua Zalo: ID=${user.id}, ZaloID=${zaloId}, Tên="${name}"`);
+    } else {
+      console.log(`🔵 [ZALO] Người dùng đăng nhập qua Zalo: ID=${user.id}, ZaloID=${zaloId}, Tên="${user.fullName}"`);
+    }
+
+    // Cập nhật lastLogin
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { lastLogin: new Date() },
+    });
+
+    const payload = {
+      sub: user.id,
+      role: user.role,
+    };
+
+    return {
+      message: isNewUser
+        ? '🔵 Tạo tài khoản SmartElec qua Zalo thành công!'
+        : '🔵 Đăng nhập qua Zalo thành công!',
+      userId: user.id,
+      role: user.role,
+      isNewUser,
+      needsPassword: user.needsPassword,
+      loginMethod: 'ZALO',
+      access_token: await this.jwtService.signAsync(payload),
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // 5. ĐẶT MẬT KHẨU & SĐT CHO USER ZALO LẦN ĐẦU
+  // ─────────────────────────────────────────────────────────────────
+  async setPasswordForZaloUser(userId: number, dto: SetPasswordDto) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Người dùng không tồn tại');
+    }
+
+    if (!user.needsPassword) {
+      throw new ConflictException('Tài khoản đã có mật khẩu rồi!');
+    }
+
+    // Kiểm tra SĐT đã được sử dụng bởi user khác chưa
+    const phoneExists = await this.prisma.user.findUnique({
+      where: { phoneNumber: dto.phoneNumber },
+    });
+
+    if (phoneExists && phoneExists.id !== userId) {
+      throw new ConflictException('Số điện thoại này đã được đăng ký bởi tài khoản khác!');
+    }
+
+    // Băm mật khẩu mới
+    const salt = await bcrypt.genSalt();
+    const hashedPassword = await bcrypt.hash(dto.newPassword, salt);
+
+    // Cập nhật SĐT + mật khẩu + tắt flag needsPassword
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        phoneNumber: dto.phoneNumber,
+        password: hashedPassword,
+        needsPassword: false,
+      },
+    });
+
+    console.log(`🔵 [ZALO] User ID=${userId} đã hoàn tất đặt mật khẩu và SĐT: ${dto.phoneNumber}`);
+
+    return {
+      message: 'Đặt mật khẩu và số điện thoại thành công! Chào mừng bạn đến SmartElec.',
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // 6. ĐĂNG NHẬP BẰNG GOOGLE (Auto-Register nếu chưa có tài khoản)
+  // ─────────────────────────────────────────────────────────────────
+  async loginWithGoogle(dto: GoogleLoginDto) {
+    const { idToken } = dto;
+
+    // 1. Xác thực idToken từ Firebase
+    let decodedToken: admin.auth.DecodedIdToken;
+    try {
+      // Kiểm tra Firebase Admin đã được khởi tạo chưa
+      if (admin.apps.length === 0) {
+        console.error('❌ [GOOGLE] Firebase Admin chưa được khởi tạo! apps.length = 0');
+        throw new Error('Firebase Admin chưa được khởi tạo');
+      }
+      console.log(`🔍 [GOOGLE] Bắt đầu verify idToken, Firebase apps: ${admin.apps.length}`);
+      decodedToken = await admin.auth().verifyIdToken(idToken);
+      console.log(`✅ [GOOGLE] Verify thành công, uid=${decodedToken.uid}`);
+    } catch (error) {
+      console.error('❌ [GOOGLE] Xác thực Firebase ID Token thất bại:', (error as Error).message);
+      console.error('❌ [GOOGLE] Full error:', error);
+      throw new UnauthorizedException(`Token Google không hợp lệ: ${(error as Error).message}`);
+    }
+
+    const googleId = decodedToken.uid;
+    const email = decodedToken.email || null;
+    const name = decodedToken.name || decodedToken.email?.split('@')[0] || 'Người dùng Google';
+    const picture = decodedToken.picture || null;
+
+    // 2. Tìm user theo googleId
+    let user = await this.prisma.user.findUnique({
+      where: { googleId },
+    });
+
+    let isNewUser = false;
+
+    if (!user) {
+      // Kiểm tra xem email đã tồn tại chưa (user đã đăng ký bằng SĐT trước đó)
+      if (email) {
+        const existingUserByEmail = await this.prisma.user.findUnique({
+          where: { email },
+        });
+
+        if (existingUserByEmail) {
+          // Liên kết Google ID vào tài khoản hiện có
+          user = await this.prisma.user.update({
+            where: { id: existingUserByEmail.id },
+            data: { googleId },
+          });
+          console.log(`🟢 [GOOGLE] Liên kết Google vào tài khoản hiện có: ID=${user.id}, Email=${email}`);
+        }
+      }
+
+      if (!user) {
+        // ✅ AUTO-REGISTER: Tạo tài khoản mới từ thông tin Google
+        isNewUser = true;
+        const tempPassword = uuidv4();
+        const salt = await bcrypt.genSalt();
+        const hashedTempPassword = await bcrypt.hash(tempPassword, salt);
+        const tempPhone = `GOOGLE_${googleId.substring(0, 12)}`;
+
+        user = await this.prisma.user.create({
+          data: {
+            googleId,
+            email: email || null,
+            fullName: name,
+            avatarUrl: picture,
+            phoneNumber: tempPhone,
+            password: hashedTempPassword,
+            gender: 'OTHER',
+            needsPassword: true,
+          },
+        });
+
+        console.log(`🟢 [GOOGLE] Người dùng MỚI đăng ký qua Google: ID=${user.id}, GoogleID=${googleId}, Email=${email}`);
+      }
+    } else {
+      console.log(`🟢 [GOOGLE] Người dùng đăng nhập qua Google: ID=${user.id}, GoogleID=${googleId}, Tên="${user.fullName}"`);
+    }
+
+    // 3. Cập nhật lastLogin
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { lastLogin: new Date() },
+    });
+
+    const payload = {
+      sub: user.id,
+      role: user.role,
+    };
+
+    return {
+      message: isNewUser
+        ? '🟢 Tạo tài khoản SmartElec qua Google thành công!'
+        : '🟢 Đăng nhập qua Google thành công!',
+      userId: user.id,
+      role: user.role,
+      isNewUser,
+      needsPassword: user.needsPassword,
+      loginMethod: 'GOOGLE',
+      access_token: await this.jwtService.signAsync(payload),
+    };
   }
 }
