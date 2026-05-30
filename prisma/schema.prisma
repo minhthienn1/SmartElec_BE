@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // ======================================================================
@@ -77,6 +78,11 @@ model User {
   avatarUrl   String?
   address     String?
   fcmToken    String?
+
+  // Social Login IDs
+  zaloId        String?  @unique  // ID Zalo (duy nhất, dùng cho đăng nhập Zalo)
+  googleId      String?  @unique  // ID Google (duy nhất, dùng cho đăng nhập Google)
+  needsPassword Boolean  @default(false) // true khi user đăng ký qua Zalo/Google chưa đặt mật khẩu
 
   role       UserRole @default(USER)
   isVerified Boolean  @default(false)
@@ -291,7 +297,7 @@ model TechnicalDocument {
 
   // Vector embedding — dùng pgvector extension (đã bật trên Neon)
   // Chiều 768 tương thích với mô hình text-embedding-004 của Google
-  embedding   Unsupported("vector(768)")?
+  // embedding   Unsupported("vector(768)")? // Commented for local dev
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
