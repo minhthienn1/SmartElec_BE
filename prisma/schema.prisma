@@ -41,6 +41,7 @@ enum MessageType {
   VIDEO // Video gửi trong chat
   QUOTE_CARD // Thẻ báo giá
   SYSTEM_LOG // Tin nhắn hệ thống
+  QUOTE_RESPONSE
 }
 
 enum QuoteStatus {
