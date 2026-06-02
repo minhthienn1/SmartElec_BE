@@ -56,7 +56,7 @@ export class ChatsService {
         orderBy: { updatedAt: 'desc' },
         include: {
           user: { select: { id: true, fullName: true, avatarUrl: true, role: true } },
-          technician: { select: { id: true, fullName: true, avatarUrl: true, role: true } },
+          technician: { select: { id: true, fullName: true, avatarUrl: true, role: true, phoneNumber:true } },
           review: true, // Thêm include review để check
           messages: {
             orderBy: { createdAt: 'desc' },
@@ -75,7 +75,7 @@ export class ChatsService {
       where: { id: sessionId },
       include: {
         user: { select: { id: true, fullName: true, avatarUrl: true, role: true } },
-        technician: { select: { id: true, fullName: true, avatarUrl: true, role: true } },
+        technician: { select: { id: true, fullName: true, avatarUrl: true, role: true, phoneNumber: true } },
         review: true,
       },
     });
