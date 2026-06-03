@@ -644,6 +644,35 @@ export class ChatsService {
     };
   }
 
+  async startRepair(sessionId: number, technicianId: number) {
+    // 1. Kiểm tra session có tồn tại và đúng thợ không
+    const session = await this.prisma.chatSession.findUnique({
+      where: { id: sessionId },
+    });
+
+    if (!session || session.technicianId !== technicianId) {
+      throw new BadRequestException('Bạn không có quyền thao tác trên đơn hàng này.');
+    }
+
+    // 2. Cập nhật trạng thái thành IN_PROGRESS
+    const updatedSession = await this.prisma.chatSession.update({
+      where: { id: sessionId },
+      data: {
+        status: 'IN_PROGRESS',
+        updatedAt: new Date(),
+      },
+    });
+
+    // 3. Emit qua Socket để Flutter (bên Khách) tự động nhảy trạng thái
+    this.chatsGateway.server.to(`room_${sessionId}`).emit('job_status_changed', {
+      sessionId: sessionId,
+      status: 'IN_PROGRESS',
+      message: 'Thợ đã bắt đầu sửa chữa.',
+    });
+
+    return updatedSession;
+  }
+
   // ─────────────────────────────────────────────────────────────────
   // NHIỆM VỤ 4: THỢ BẮT ĐẦU DI CHUYỂN (EN_ROUTE)
   // ─────────────────────────────────────────────────────────────────

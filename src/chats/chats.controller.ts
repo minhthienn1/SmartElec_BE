@@ -330,6 +330,23 @@ export class ChatsController {
     return this.chatsService.startEnRoute(id, technicianId);
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // POST /chats/technician/jobs/:id/start-repair
+  // Thợ xác nhận bắt đầu sửa chữa → Chuyển sang IN_PROGRESS
+  // ─────────────────────────────────────────────────────────────────
+  @Post('technician/jobs/:id/start-repair')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async startRepair(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req,
+  ) {
+    const technicianId = Number(req.user.id || req.user.userId || req.user.sub);
+    
+    // Gọi sang ChatsService để xử lý logic đổi status và emit socket
+    return this.chatsService.startRepair(id, technicianId);
+  }
+
   @Post('technician/jobs/:id/arrived')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
@@ -370,4 +387,7 @@ export class ChatsController {
     const userId = Number(req.user.id || req.user.userId || req.user.sub);
     return this.chatsService.redispatchJob(id, userId);
   }
+
+  
 }
+
