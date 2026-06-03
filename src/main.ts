@@ -18,7 +18,16 @@ async function bootstrap() {
   app.use(urlencoded({ extended: true, limit: '10mb' }));
 
   // Bật Validation (DTO)
-  app.useGlobalPipes(new ValidationPipe({ whitelist: true }));
+  app.useGlobalPipes(
+    new ValidationPipe({
+      // Chỉ giữ các field khai báo trong DTO.
+      whitelist: true,
+      // Báo lỗi ngay nếu payload chứa field lạ (chặn request nhảm).
+      forbidNonWhitelisted: true,
+      // Tự động transform kiểu dữ liệu theo DTO.
+      transform: true,
+    }),
+  );
 
   // Đọc PORT từ .env, nếu không có thì mặc định chạy 3000
   const port = process.env.PORT || 3000;

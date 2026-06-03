@@ -96,3 +96,111 @@ Nest is an MIT-licensed open source project. It can grow thanks to the sponsors 
 ## License
 
 Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+
+```
+Smartelec_Backend
+├─ .prettierrc
+├─ .sixth
+│  └─ skills
+├─ eslint.config.mjs
+├─ nest-cli.json
+├─ package-lock.json
+├─ package.json
+├─ prisma
+│  ├─ migrations
+│  │  ├─ 20260319155810_upgrade_user_and_chat_tables
+│  │  │  └─ migration.sql
+│  │  ├─ 20260422083431_init_new_schema
+│  │  │  └─ migration.sql
+│  │  ├─ 20260422091915_fix_duplicate_role
+│  │  │  └─ migration.sql
+│  │  └─ migration_lock.toml
+│  └─ schema.prisma
+├─ README.md
+├─ scratch
+│  ├─ create-technician.ts
+│  └─ query-sessions.ts
+├─ src
+│  ├─ ai
+│  │  ├─ ai.controller.ts
+│  │  ├─ ai.module.ts
+│  │  └─ ai.service.ts
+│  ├─ app.controller.spec.ts
+│  ├─ app.controller.ts
+│  ├─ app.module.ts
+│  ├─ app.service.ts
+│  ├─ auth
+│  │  ├─ auth.controller.spec.ts
+│  │  ├─ auth.controller.ts
+│  │  ├─ auth.module.ts
+│  │  ├─ auth.service.spec.ts
+│  │  ├─ auth.service.ts
+│  │  ├─ dto
+│  │  │  ├─ login.dto.ts
+│  │  │  └─ register.dto.ts
+│  │  ├─ guards
+│  │  │  └─ jwt-auth.guard.ts
+│  │  └─ jwt.strategy.ts
+│  ├─ chat-history
+│  │  ├─ chat-history.controller.ts
+│  │  ├─ chat-history.module.ts
+│  │  └─ chat-history.service.ts
+│  ├─ chats
+│  │  ├─ chat.controller.ts
+│  │  ├─ chats.controller.ts
+│  │  ├─ chats.gateway.ts
+│  │  ├─ chats.module.ts
+│  │  ├─ chats.service.ts
+│  │  └─ dto
+│  │     ├─ create-quote.dto.ts
+│  │     └─ send-message.dto.ts
+│  ├─ devices
+│  │  ├─ devices.controller.ts
+│  │  ├─ devices.module.ts
+│  │  ├─ devices.service.ts
+│  │  ├─ dto
+│  │  │  ├─ create-device.dto.ts
+│  │  │  └─ update-device.dto.ts
+│  │  └─ entities
+│  │     └─ device.entity.ts
+│  ├─ jobs
+│  │  ├─ job-dispatch.processor.ts
+│  │  ├─ jobs.module.ts
+│  │  └─ jobs.service.ts
+│  ├─ main.ts
+│  ├─ mechanic-ai
+│  │  ├─ mechanic-ai.controller.ts
+│  │  ├─ mechanic-ai.module.ts
+│  │  └─ mechanic-ai.service.ts
+│  ├─ notifications
+│  │  ├─ notifications.controller.ts
+│  │  ├─ notifications.module.ts
+│  │  └─ notifications.service.ts
+│  ├─ prisma
+│  │  ├─ prisma.module.ts
+│  │  ├─ prisma.service.spec.ts
+│  │  └─ prisma.service.ts
+│  ├─ rag
+│  │  ├─ dto
+│  │  │  └─ ingest-document.dto.ts
+│  │  ├─ rag.controller.ts
+│  │  ├─ rag.module.ts
+│  │  └─ rag.service.ts
+│  ├─ upload
+│  │  ├─ upload.controller.ts
+│  │  ├─ upload.module.ts
+│  │  └─ upload.service.ts
+│  └─ users
+│     ├─ users.controller.ts
+│     ├─ users.module.ts
+│     ├─ users.service.spec.ts
+│     └─ users.service.ts
+├─ test
+│  ├─ app.e2e-spec.ts
+│  └─ jest-e2e.json
+├─ test-rlhf.ts
+├─ tsconfig.build.json
+├─ tsconfig.build.tsbuildinfo
+└─ tsconfig.json
+
+```
