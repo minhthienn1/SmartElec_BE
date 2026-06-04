@@ -16,6 +16,7 @@ import { AiModule } from './ai/ai.module';
 import { MechanicAiModule } from './mechanic-ai/mechanic-ai.module';
 import { JobsModule } from './jobs/jobs.module';
 import { AdminModule } from './admin/admin.module';
+import { RagModule } from './rag/rag.module';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { AdminModule } from './admin/admin.module';
     NotificationsModule,
     AiModule,
     MechanicAiModule,
+    RagModule,
     JobsModule,
     AdminModule,
   ],
