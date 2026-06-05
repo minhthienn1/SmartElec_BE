@@ -15,6 +15,8 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { AiModule } from './ai/ai.module';
 import { MechanicAiModule } from './mechanic-ai/mechanic-ai.module';
 import { JobsModule } from './jobs/jobs.module';
+import { AdminModule } from './admin/admin.module';
+import { RagModule } from './rag/rag.module';
 
 @Module({
   imports: [
@@ -44,7 +46,9 @@ import { JobsModule } from './jobs/jobs.module';
     NotificationsModule,
     AiModule,
     MechanicAiModule,
+    RagModule,
     JobsModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService],

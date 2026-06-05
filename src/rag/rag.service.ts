@@ -89,9 +89,10 @@ export class RagService {
   /**
    * Lấy danh sách tài liệu (không kèm vector để nhẹ payload)
    */
+  /** Lấy danh sách tài liệu đã nạp kèm nội dung để admin có thể xem trực tiếp trên FE. */
   async getAllDocuments() {
     return this.prisma.$queryRaw`
-      SELECT id, title, category, source, "accessLevel", "createdAt", "updatedAt"
+      SELECT id, title, content, category, source, "accessLevel", "createdAt", "updatedAt"
       FROM "technical_documents"
       ORDER BY "createdAt" DESC
     `;
