@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Delete,
   Body,
   Param,
   Query,
@@ -388,6 +389,17 @@ export class ChatsController {
     return this.chatsService.redispatchJob(id, userId);
   }
 
-  
+  @Delete('sessions/:id')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async deleteUserSession(
+    @Param('id', ParseIntPipe) sessionId: number,
+    @Req() req,
+  ) {
+    const userId = Number(req.user.id || req.user.userId || req.user.sub);
+    
+    // Gọi sang hàm deleteUserSession ở chats.service.ts mà bạn vừa thêm
+    return this.chatsService.deleteUserSession(userId, sessionId);
+  }
 }
 

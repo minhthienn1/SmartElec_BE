@@ -148,6 +148,8 @@ model ChatSession {
   status  JobStatus @default(AI_CONSULTING)
   version Int       @default(1) // Khóa lạc quan (Optimistic Locking)
 
+  isHiddenByCustomer Boolean @default(false)
+
   // Thông tin liên hệ và vị trí đơn sửa chữa
   contactName  String?
   contactPhone String?
