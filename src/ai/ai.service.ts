@@ -364,7 +364,7 @@ ${negativeText || '   (Chưa có)'}
         const device = parsed.state?.device || (prevState as any)?.device || 'thiết bị';
         const symptom = parsed.state?.symptom || (prevState as any)?.symptom || 'sự cố';
         
-        sessionId = await this.saveRepairCase(userId, device, symptom, parsed.text || 'Booking via AI');
+       sessionId = await this.saveRepairCase(userId, device, symptom, parsed.text || 'Booking via AI', sessionId);
 
         return {
           ...parsed,
@@ -387,6 +387,7 @@ ${negativeText || '   (Chưa có)'}
           parsed.state.device,
           parsed.state.symptom,
           parsed.text,
+          sessionId,
         );
       }
 
@@ -459,23 +460,52 @@ ${negativeText || '   (Chưa có)'}
     deviceType: string,
     symptom: string,
     summary: string,
+    sessionId?: number | null, // ➕ Nhận thêm tham số này
   ): Promise<number | null> {
     try {
+      // 1. Nếu Flutter có gửi sessionId lên, ưu tiên tìm và UPDATE trực tiếp vào session đó
+      if (sessionId) {
+        const existingCase = await this.prisma.chatSession.findUnique({
+          where: { id: sessionId },
+        });
+
+        if (existingCase) {
+          const updated = await this.prisma.chatSession.update({
+            where: { id: sessionId },
+            data: {
+              deviceType, // Cập nhật tên thiết bị chuẩn hóa từ AI
+              symptom,    // Cập nhật triệu chứng mới nhất
+              aiSummary: summary, // Cập nhật câu trả lời mới nhất từ AI làm tóm tắt
+            },
+          });
+          return updated.id;
+        }
+      }
+
+      // 2. Dự phòng: Nếu không có sessionId, tìm xem có case nào cùng thiết bị trong 30p qua không
       const recentCase = await this.prisma.chatSession.findFirst({
         where: {
           userId,
           deviceType,
-          symptom,
           createdAt: { gte: new Date(Date.now() - 1000 * 60 * 30) },
         },
       });
-      if (recentCase) return recentCase.id;
+      
+      if (recentCase) {
+        const updated = await this.prisma.chatSession.update({
+          where: { id: recentCase.id },
+          data: { symptom, aiSummary: summary },
+        });
+        return updated.id;
+      }
 
+      // 3. Nếu hoàn toàn là cuộc trò chuyện mới tinh -> Tiến hành tạo mới (CREATE)
       const newCase = await this.prisma.chatSession.create({
         data: { userId, deviceType, symptom, aiSummary: summary, status: 'AI_CONSULTING' },
       });
       return newCase.id;
     } catch (error: any) {
+      this.logger.error('❌ Lỗi khi lưu/cập nhật ChatSession trong saveRepairCase:', error);
       return null;
     }
   }
