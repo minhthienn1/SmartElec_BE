@@ -6,19 +6,44 @@ export class ChatHistoryService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Lưu một phiên chẩn đoán mới vào bảng `chatSession`.
-   * @param userId  - ID của user đang đăng nhập (lấy từ JWT token)
-   * @param title   - Tên thiết bị (map sang `deviceType` ở Prisma)
-   * @param summary - Tóm tắt chẩn đoán của AI (map sang `aiSummary` ở Prisma)
+   * Lưu hoặc Cập nhật phiên chẩn đoán vào bảng `chatSession`.
+   * @param userId    - ID của user
+   * @param title     - Tên thiết bị
+   * @param summary   - Tóm tắt mới nhất từ AI
+   * @param sessionId - (Tùy chọn) ID của phiên chat hiện tại nếu đã có
    */
-  async saveSession(userId: number, title: string, summary: string) {
+  async saveSession(userId: number, title: string, summary: string, sessionId?: number) {
     try {
+      // 🟢 Nếu đã có sessionId truyền lên từ Flutter -> Tiến hành UPDATE
+      if (sessionId) {
+        console.log(`🔄 [Prisma] Đang cập nhật Session cũ ID: ${sessionId}`);
+        const result = await this.prisma.chatSession.update({
+          where: { id: sessionId },
+          data: {
+            aiSummary: summary,
+            symptom: summary, // Cập nhật triệu chứng mới nhất
+          },
+          select: {
+            id: true,
+            deviceType: true,
+            aiSummary: true,
+            createdAt: true,
+            userId: true,
+            symptom: true,
+            status: true,
+          },
+        });
+        return result;
+      }
+
+      // 🟢 Nếu CHƯA có sessionId -> Tạo phiên mới (CREATE) như cũ
+      console.log('➕ [Prisma] Đang tạo một Session mới hoàn toàn');
       const result = await this.prisma.chatSession.create({
         data: {
           userId,
           deviceType: title,
           aiSummary: summary,
-          symptom: summary, // ✅ Lưu mô tả vào cả symptom để thợ xem được trên Job Board
+          symptom: summary,
         },
         select: {
           id: true,
@@ -26,14 +51,15 @@ export class ChatHistoryService {
           aiSummary: true,
           createdAt: true,
           userId: true,
+          symptom: true,
+          status: true,
         },
       });
-      console.log('✅ TRẠNG THÁI: Lưu Prisma THÀNH CÔNG ->', result.id);
       return result;
     } catch (error) {
       console.error('❌ LỖI DATABASE PRISMA:', error);
       throw new InternalServerErrorException(
-        'Không thể lưu phiên chẩn đoán. Vui lòng thử lại.',
+        'Không thể lưu/cập nhật phiên chẩn đoán.',
       );
     }
   }
@@ -53,6 +79,8 @@ export class ChatHistoryService {
           deviceType: true,
           aiSummary: true,
           createdAt: true,
+          symptom: true, // ➕ Lấy vấn đề để Flutter hiện lên Card
+          status: true,  // ➕ Lấy trạng thái để Flutter đổi màu
         },
       });
     } catch (error) {
