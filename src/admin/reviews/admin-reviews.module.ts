@@ -7,5 +7,6 @@ import { AdminReviewsService } from './admin-reviews.service';
   imports: [PrismaModule],
   controllers: [AdminReviewsController],
   providers: [AdminReviewsService],
+  exports: [AdminReviewsService],
 })
 export class AdminReviewsModule {}

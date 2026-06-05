@@ -7,5 +7,6 @@ import { AdminTechniciansService } from './admin-technicians.service';
   imports: [PrismaModule],
   controllers: [AdminTechniciansController],
   providers: [AdminTechniciansService],
+  exports: [AdminTechniciansService],
 })
 export class AdminTechniciansModule {}

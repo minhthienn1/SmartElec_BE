@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { JobStatus, Prisma } from '@prisma/client';
+import { AssignmentAction, JobStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 
 type ChatListQuery = {
@@ -134,6 +134,13 @@ export class AdminChatsService {
       createdAt: Date;
       sender: { id: number; fullName: string | null; avatarUrl: string | null; role: 'USER' | 'TECHNICIAN' | 'ADMIN' } | null;
     }>;
+    assignmentHistories?: Array<{
+      id: number;
+      technicianId: number;
+      action: AssignmentAction;
+      createdAt: Date;
+      technician: { id: number; fullName: string | null } | null;
+    }>;
   }) {
     return {
       id: session.id,
@@ -169,7 +176,46 @@ export class AdminChatsService {
             createdAt: message.createdAt.toISOString(),
           }))
         : undefined,
+      assignmentHistories: Array.isArray(session.assignmentHistories)
+        ? session.assignmentHistories.map((item) => ({
+            id: item.id,
+            technicianId: item.technicianId,
+            action: item.action,
+            createdAt: item.createdAt.toISOString(),
+            technician: item.technician,
+          }))
+        : undefined,
     };
+  }
+
+  /** Tải một phiên chat để chuẩn bị mutation và khóa các trạng thái không còn hợp lệ. */
+  private async getSessionForMutation(sessionId: number) {
+    const session = await this.prisma.chatSession.findUnique({
+      where: { id: sessionId },
+      select: {
+        id: true,
+        status: true,
+        technicianId: true,
+      },
+    });
+
+    return session;
+  }
+
+  /** Ghi lịch sử gán hoặc gỡ thợ để FE admin đọc lại đúng dữ liệu sau khi thao tác. */
+  private createAssignmentHistory(
+    tx: Prisma.TransactionClient,
+    sessionId: number,
+    technicianId: number,
+    action: AssignmentAction,
+  ) {
+    return tx.sessionAssignmentHistory.create({
+      data: {
+        chatSessionId: sessionId,
+        technicianId,
+        action,
+      },
+    });
   }
 
   async getChats(query: ChatListQuery) {
@@ -230,6 +276,21 @@ export class AdminChatsService {
                 fullName: true,
                 avatarUrl: true,
                 role: true,
+              },
+            },
+          },
+        },
+        assignmentHistories: {
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            technicianId: true,
+            action: true,
+            createdAt: true,
+            technician: {
+              select: {
+                id: true,
+                fullName: true,
               },
             },
           },
@@ -300,9 +361,114 @@ export class AdminChatsService {
             },
           },
         },
+        assignmentHistories: {
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            technicianId: true,
+            action: true,
+            createdAt: true,
+            technician: {
+              select: {
+                id: true,
+                fullName: true,
+              },
+            },
+          },
+        },
       },
     });
 
     return session ? this.mapSession(session) : null;
+  }
+
+  /** Gán thợ cho một phiên chat từ giao diện admin và chuyển trạng thái sang MATCHED. */
+  async assignTechnician(sessionId: number, technicianId: number) {
+    const session = await this.getSessionForMutation(sessionId);
+
+    if (!session) {
+      return null;
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.chatSession.update({
+        where: { id: sessionId },
+        data: {
+          technicianId,
+          status: 'MATCHED',
+          version: { increment: 1 },
+          updatedAt: new Date(),
+        },
+      });
+
+      await this.createAssignmentHistory(
+        tx,
+        sessionId,
+        technicianId,
+        'ASSIGNED',
+      );
+    });
+
+    return this.getChatById(sessionId);
+  }
+
+  /** Gỡ thợ khỏi phiên chat và trả ca về trạng thái BROADCASTING để điều phối lại. */
+  async unassignTechnician(sessionId: number, action: AssignmentAction) {
+    const session = await this.getSessionForMutation(sessionId);
+
+    if (!session) {
+      return null;
+    }
+
+    const technicianId = session.technicianId;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.chatSession.update({
+        where: { id: sessionId },
+        data: {
+          technicianId: null,
+          status: 'BROADCASTING',
+          version: { increment: 1 },
+          updatedAt: new Date(),
+        },
+      });
+
+      if (technicianId != null) {
+        await this.createAssignmentHistory(tx, sessionId, technicianId, action);
+      }
+    });
+
+    return this.getChatById(sessionId);
+  }
+
+  /** Hủy ca từ phía admin và giữ lại lịch sử thao tác để phục vụ điều phối. */
+  async cancelChat(sessionId: number) {
+    const session = await this.getSessionForMutation(sessionId);
+
+    if (!session) {
+      return null;
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.chatSession.update({
+        where: { id: sessionId },
+        data: {
+          status: 'CANCELLED',
+          version: { increment: 1 },
+          updatedAt: new Date(),
+        },
+      });
+
+      if (session.technicianId != null) {
+        await this.createAssignmentHistory(
+          tx,
+          sessionId,
+          session.technicianId,
+          'MANUAL_CANCEL',
+        );
+      }
+    });
+
+    return this.getChatById(sessionId);
   }
 }

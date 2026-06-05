@@ -152,6 +152,40 @@ export class AdminAccountsService {
     return user ? this.mapAccount(user) : null;
   }
 
+  /** Tải tài khoản theo id và ném lỗi nếu bản ghi không tồn tại. */
+  private async getExistingAccount(accountId: number) {
+    const current = await this.prisma.user.findUnique({
+      where: { id: accountId },
+      select: { id: true, email: true, role: true },
+    });
+
+    if (!current) {
+      throw new NotFoundException('Không tìm thấy tài khoản.');
+    }
+
+    return current;
+  }
+
+  /** Cập nhật nhanh trạng thái khóa hoặc xác minh của tài khoản rồi trả về bản ghi mới nhất. */
+  private async updateAccountFlags(
+    accountId: number,
+    data: { isActive?: boolean; isVerified?: boolean; role?: UserRole },
+  ) {
+    await this.getExistingAccount(accountId);
+
+    await this.prisma.user.update({
+      where: { id: accountId },
+      data,
+    });
+
+    const account = await this.loadAccountByIdOrNull(accountId);
+    if (!account) {
+      throw new NotFoundException('Không tìm thấy tài khoản.');
+    }
+
+    return account;
+  }
+
   async createAccount(payload: CreateAdminAccountDto) {
     const phoneNumber = payload.phoneNumber.trim();
     const email = this.normalizeOptionalString(payload.email);
@@ -281,14 +315,7 @@ export class AdminAccountsService {
   }
 
   async updateAccount(accountId: number, payload: UpdateAdminAccountDto) {
-    const current = await this.prisma.user.findUnique({
-      where: { id: accountId },
-      select: { id: true, email: true },
-    });
-
-    if (!current) {
-      return null;
-    }
+    const current = await this.getExistingAccount(accountId);
 
     const nextEmail = payload.email === undefined ? undefined : this.normalizeOptionalString(payload.email);
 
@@ -319,5 +346,91 @@ export class AdminAccountsService {
     });
 
     return this.loadAccountByIdOrNull(accountId);
+  }
+
+  /** Khóa tài khoản để admin tạm ngừng quyền đăng nhập và hoạt động của người dùng. */
+  lockAccount(accountId: number) {
+    return this.updateAccountFlags(accountId, { isActive: false });
+  }
+
+  /** Mở khóa tài khoản để khôi phục lại trạng thái hoạt động bình thường. */
+  unlockAccount(accountId: number) {
+    return this.updateAccountFlags(accountId, { isActive: true });
+  }
+
+  /** Đánh dấu tài khoản đã được xác minh thủ công từ phía admin. */
+  verifyAccount(accountId: number) {
+    return this.updateAccountFlags(accountId, { isVerified: true });
+  }
+
+  /** Gỡ cờ xác minh để tài khoản quay về trạng thái chưa được duyệt. */
+  unverifyAccount(accountId: number) {
+    return this.updateAccountFlags(accountId, { isVerified: false });
+  }
+
+  /** Đổi vai trò tài khoản để phục vụ nhu cầu quản trị người dùng trong backoffice. */
+  changeAccountRole(accountId: number, role: UserRole) {
+    return this.updateAccountFlags(accountId, { role });
+  }
+
+  /** Đặt lại mật khẩu đăng nhập cho tài khoản theo yêu cầu từ admin. */
+  async resetAccountPassword(accountId: number, password: string) {
+    await this.getExistingAccount(accountId);
+
+    const hashedPassword = await bcrypt.hash(password, this.saltRounds);
+
+    await this.prisma.user.update({
+      where: { id: accountId },
+      data: {
+        password: hashedPassword,
+        needsPassword: false,
+      },
+    });
+
+    const account = await this.loadAccountByIdOrNull(accountId);
+    if (!account) {
+      throw new NotFoundException('Không tìm thấy tài khoản.');
+    }
+
+    return account;
+  }
+
+  /** Xóa hẳn tài khoản nếu bản ghi không còn ràng buộc nghiệp vụ với dữ liệu khác. */
+  async deleteAccount(accountId: number) {
+    await this.getExistingAccount(accountId);
+
+    const linkedData = await this.prisma.user.findUnique({
+      where: { id: accountId },
+      select: {
+        _count: {
+          select: {
+            devices: true,
+            chatSessions: true,
+            technicianSessions: true,
+            sentMessages: true,
+            quotesCreated: true,
+            assignmentHistories: true,
+            reviewsGiven: true,
+            reviewsReceived: true,
+          },
+        },
+      },
+    });
+
+    const hasLinkedData = Object.values(linkedData?._count ?? {}).some(
+      (value) => value > 0,
+    );
+
+    if (hasLinkedData) {
+      throw new ConflictException(
+        'Tài khoản đang có dữ liệu liên quan nên không thể xóa cứng.',
+      );
+    }
+
+    await this.prisma.user.delete({
+      where: { id: accountId },
+    });
+
+    return { success: true };
   }
 }

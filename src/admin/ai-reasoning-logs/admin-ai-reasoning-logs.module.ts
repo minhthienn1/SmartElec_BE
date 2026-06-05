@@ -7,5 +7,6 @@ import { AdminAiReasoningLogsService } from './admin-ai-reasoning-logs.service';
   imports: [PrismaModule],
   controllers: [AdminAiReasoningLogsController],
   providers: [AdminAiReasoningLogsService],
+  exports: [AdminAiReasoningLogsService],
 })
 export class AdminAiReasoningLogsModule {}
