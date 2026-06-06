@@ -105,4 +105,38 @@ export class ChatHistoryService {
     },
   });
 }
+
+/**
+   * Ẩn (xóa mềm) nhiều session cùng lúc bằng updateMany
+   * @param sessionIds - Mảng chứa các ID cần ẩn
+   * @param userId - ID của user đang thao tác (để bảo mật)
+   */
+  async hideMultipleChatSessions(sessionIds: number[], userId: number) {
+    try {
+      const result = await this.prisma.chatSession.updateMany({
+        where: { 
+          // Chỉ chọn những bản ghi có id nằm trong mảng sessionIds
+          id: { in: sessionIds },
+          // BẢO MẬT: Đảm bảo chỉ cập nhật các session thuộc về đúng user này
+          userId: userId 
+        },
+        data: { 
+          isHiddenByCustomer: true 
+        },
+      });
+
+      console.log(`✅ Đã xóa thành công ${result.count} phiên chẩn đoán cho User ${userId}`);
+      
+      // Trả về số lượng đã ẩn thành công để FE có thể kiểm tra nếu cần
+      return { 
+        success: true, 
+        hiddenCount: result.count 
+      };
+    } catch (error) {
+      console.error('❌ LỖI DATABASE PRISMA (hideMultiple):', error);
+      throw new InternalServerErrorException(
+        'Có lỗi xảy ra khi xóa các phiên chẩn đoán. Vui lòng thử lại sau.',
+      );
+    }
+  }
 }
