@@ -14,7 +14,7 @@ import {
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ChatHistoryService } from './chat-history.service';
-import { IsString, IsNotEmpty, IsOptional } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsArray, IsInt, ArrayNotEmpty } from 'class-validator';
 
 // DTO để validate request body
 class SaveHistoryDto {
@@ -25,6 +25,13 @@ class SaveHistoryDto {
   @IsString()
   @IsOptional()
   summary: string;
+}
+
+class HideBulkDto {
+  @IsArray({ message: 'Danh sách ID phải là một mảng' })
+  @ArrayNotEmpty({ message: 'Mảng ID không được để trống' })
+  @IsInt({ each: true, message: 'Mỗi ID trong mảng phải là số nguyên' })
+  ids: number[];
 }
 
 @Controller('chats')
@@ -79,5 +86,23 @@ export class ChatHistoryController {
     console.log(`--- [API HITTING] PATCH /chats/sessions/${id}/hide ---`);
     const userId = req.user.userId;
     return this.chatHistoryService.hideChatSession(id, userId);
+  }
+
+  /**
+   * PATCH /chats/sessions/hide-bulk
+   * Ẩn (xóa mềm) NHIỀU phiên chẩn đoán cùng lúc.
+   */
+  @Patch('sessions/hide-bulk')
+  @HttpCode(HttpStatus.OK)
+  async hideBulkSessions(
+    @Req() req: { user: { userId: number } },
+    @Body() body: HideBulkDto, // Validate mảng IDs tự động
+  ) {
+    console.log(`--- [API HITTING] PATCH /chats/sessions/hide-bulk ---`);
+    console.log(`Đang yêu cầu ẩn các IDs:`, body.ids);
+    
+    const userId = req.user.userId;
+    // Gọi sang service
+    return this.chatHistoryService.hideMultipleChatSessions(body.ids, userId);
   }
 }
