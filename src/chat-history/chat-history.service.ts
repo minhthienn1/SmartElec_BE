@@ -72,8 +72,9 @@ export class ChatHistoryService {
   async getUserHistory(userId: number) {
     try {
       return await this.prisma.chatSession.findMany({
-        where: { userId },
+        where: { userId, isHiddenByCustomer: false, },
         orderBy: { createdAt: 'desc' },
+        
         select: {
           id: true,
           deviceType: true,
@@ -81,6 +82,7 @@ export class ChatHistoryService {
           createdAt: true,
           symptom: true, // ➕ Lấy vấn đề để Flutter hiện lên Card
           status: true,  // ➕ Lấy trạng thái để Flutter đổi màu
+          
         },
       });
     } catch (error) {
@@ -89,4 +91,18 @@ export class ChatHistoryService {
       );
     }
   }
+
+  async hideChatSession(sessionId: number, userId: number) {
+  // Cập nhật cờ isHiddenByCustomer thành true thay vì xóa khỏi database
+  return await this.prisma.chatSession.update({
+    where: { 
+      id: sessionId,
+      // Đảm bảo chỉ chính khách hàng đó mới có quyền ẩn session của họ
+      userId: userId 
+    },
+    data: { 
+      isHiddenByCustomer: true 
+    },
+  });
+}
 }
