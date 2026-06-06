@@ -916,4 +916,33 @@ export class ChatsService {
     }
   }
 
+  async deleteUserSession(userId: number, sessionId: number) {
+    try {
+      // 1. Kiểm tra xem ca chẩn đoán này có đúng là của User này không
+      const session = await this.prisma.chatSession.findFirst({
+        where: { id: sessionId, userId: userId },
+      });
+
+      if (!session) {
+        throw new NotFoundException('Dạ không tìm thấy ca chẩn đoán này ạ!');
+      }
+
+      // 2. Xóa các log liên quan trong bảng aiReasoningLog trước (Tránh lỗi khóa ngoại Foreign Key)
+      await this.prisma.aiReasoningLog.deleteMany({
+        where: { sessionId: sessionId },
+      });
+
+      // 3. Tiến hành xóa phiên chat chính
+      await this.prisma.chatSession.delete({
+        where: { id: sessionId },
+      });
+
+      return { success: true, message: 'Đã xóa ca chẩn đoán thành công.' };
+    } catch (error) {
+      this.logger.error(`Lỗi khi xóa session ${sessionId}:`, error);
+      if (error instanceof NotFoundException) throw error;
+      throw new InternalServerErrorException('Không thể xóa ca chẩn đoán.');
+    }
+  }
+
 }
