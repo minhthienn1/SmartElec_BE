@@ -17,6 +17,8 @@ async function bootstrap() {
   app.use(json({ limit: '10mb' }));
   app.use(urlencoded({ extended: true, limit: '10mb' }));
 
+  app.setGlobalPrefix('api'); // Thêm tiền tố 'api' cho tất cả các route
+
   // Bật Validation (DTO)
   app.useGlobalPipes(new ValidationPipe({ whitelist: true }));
 
