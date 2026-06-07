@@ -17,6 +17,7 @@ import { MechanicAiModule } from './mechanic-ai/mechanic-ai.module';
 import { JobsModule } from './jobs/jobs.module';
 import { AdminModule } from './admin/admin.module';
 import { RagModule } from './rag/rag.module';
+import { RepairHistoryModule } from './chat-history/repair-history.module';
 
 @Module({
   imports: [
@@ -49,6 +50,7 @@ import { RagModule } from './rag/rag.module';
     RagModule,
     JobsModule,
     AdminModule,
+    RepairHistoryModule,
   ],
   controllers: [AppController],
   providers: [AppService],
