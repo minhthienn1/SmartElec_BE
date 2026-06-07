@@ -1,5 +1,6 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { SessionType } from '@prisma/client';
 
 @Injectable()
 export class ChatHistoryService {
@@ -12,7 +13,7 @@ export class ChatHistoryService {
    * @param summary   - Tóm tắt mới nhất từ AI
    * @param sessionId - (Tùy chọn) ID của phiên chat hiện tại nếu đã có
    */
-  async saveSession(userId: number, title: string, summary: string, sessionId?: number) {
+  async saveSession(userId: number, title: string, summary: string, sessionId?: number, sessionType?: SessionType) {
     try {
       // 🟢 Nếu đã có sessionId truyền lên từ Flutter -> Tiến hành UPDATE
       if (sessionId) {
@@ -44,6 +45,7 @@ export class ChatHistoryService {
           deviceType: title,
           aiSummary: summary,
           symptom: summary,
+          sessionType: sessionType || 'AI_DIAGNOSIS',
         },
         select: {
           id: true,
@@ -72,7 +74,7 @@ export class ChatHistoryService {
   async getUserHistory(userId: number) {
     try {
       return await this.prisma.chatSession.findMany({
-        where: { userId, isHiddenByCustomer: false, },
+        where: { userId, isHiddenByCustomer: false, sessionType: 'AI_DIAGNOSIS' },
         orderBy: { createdAt: 'desc' },
         
         select: {

@@ -14,7 +14,8 @@ import {
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ChatHistoryService } from './chat-history.service';
-import { IsString, IsNotEmpty, IsOptional, IsArray, IsInt, ArrayNotEmpty } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsArray, IsInt, ArrayNotEmpty, IsEnum } from 'class-validator';
+import { SessionType } from '@prisma/client';
 
 // DTO để validate request body
 class SaveHistoryDto {
@@ -25,6 +26,10 @@ class SaveHistoryDto {
   @IsString()
   @IsOptional()
   summary: string;
+
+  @IsEnum(SessionType)
+  @IsOptional()
+  sessionType?: SessionType;
 }
 
 class HideBulkDto {
@@ -59,7 +64,7 @@ export class ChatHistoryController {
     }
 
     const userId = req.user.userId;
-    return this.chatHistoryService.saveSession(userId, body.title, body.summary);
+    return this.chatHistoryService.saveSession(userId, body.title, body.summary, undefined, body.sessionType);
   }
 
   /**

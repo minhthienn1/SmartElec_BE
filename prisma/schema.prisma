@@ -82,6 +82,7 @@ model ChatSession {
   latitude            Float?
   longitude           Float?
   isHiddenByCustomer  Boolean                    @default(false)
+  sessionType         SessionType                @default(AI_DIAGNOSIS)
   device              Device?                    @relation(fields: [deviceId], references: [id])
   technician          User?                      @relation("TechnicianSessions", fields: [technicianId], references: [id])
   user                User                       @relation("CustomerSessions", fields: [userId], references: [id], onDelete: Cascade)
@@ -242,4 +243,9 @@ enum AssignmentAction {
 enum AccessLevel {
   BASIC
   ADVANCED
+}
+
+enum SessionType {
+  AI_DIAGNOSIS
+  DIRECT_BOOKING
 }
