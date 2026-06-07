@@ -22,7 +22,7 @@ export class RagService {
    */
   private async generateEmbedding(text: string): Promise<number[]> {
     try {
-      const model = this.genAI.getGenerativeModel({ model: 'text-embedding-004' });
+      const model = this.genAI.getGenerativeModel({ model: 'gemini-embedding-001' });
       const result = await model.embedContent(text);
       return result.embedding.values;
     } catch (error) {
@@ -96,5 +96,94 @@ export class RagService {
       FROM "technical_documents"
       ORDER BY "createdAt" DESC
     `;
+  }
+
+  /**
+   * Cập nhật tài liệu hiện có và vector hóa lại để dữ liệu RAG không bị lệch nội dung.
+   */
+  async updateDocument(id: number, dto: IngestDocumentDto) {
+    const existing = await this.prisma.technicalDocument.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+
+    if (!existing) {
+      throw new HttpException('Không tìm thấy tài liệu', HttpStatus.NOT_FOUND);
+    }
+
+    const { title, content, category, source, accessLevel = 'ADVANCED' } = dto;
+    const textToEmbed = `Tiêu đề: ${title}\nNội dung: ${content}`;
+    const embeddingValues = await this.generateEmbedding(textToEmbed);
+    const embeddingString = `[${embeddingValues.join(',')}]`;
+
+    try {
+      const rows = await this.prisma.$queryRaw<
+        Array<{
+          id: number;
+          title: string;
+          content: string;
+          category: string | null;
+          source: string | null;
+          accessLevel: string;
+          createdAt: Date;
+          updatedAt: Date;
+        }>
+      >`
+        UPDATE "technical_documents"
+        SET
+          "title" = ${title},
+          "content" = ${content},
+          "category" = ${category || null},
+          "source" = ${source || null},
+          "accessLevel" = CAST(${accessLevel} AS "AccessLevel"),
+          "embedding" = CAST(${embeddingString} AS vector),
+          "updatedAt" = now()
+        WHERE "id" = ${id}
+        RETURNING id, title, content, category, source, "accessLevel", "createdAt", "updatedAt"
+      `;
+
+      return {
+        message: 'Tài liệu đã được cập nhật và vector hóa lại thành công',
+        document: rows[0] ?? null,
+      };
+    } catch (error) {
+      this.logger.error('Lỗi khi cập nhật tài liệu trong database:', error);
+      throw new HttpException(
+        'Không thể cập nhật tài liệu trong database',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  /**
+   * Xóa tài liệu khỏi kho tri thức RAG.
+   */
+  async deleteDocument(id: number) {
+    const existing = await this.prisma.technicalDocument.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+
+    if (!existing) {
+      throw new HttpException('Không tìm thấy tài liệu', HttpStatus.NOT_FOUND);
+    }
+
+    try {
+      await this.prisma.technicalDocument.delete({
+        where: { id },
+      });
+
+      return {
+        message: 'Tài liệu đã được xóa thành công',
+        id,
+      };
+    } catch (error) {
+      this.logger.error('Lỗi khi xóa tài liệu trong database:', error);
+
+      throw new HttpException(
+        'Không thể xóa tài liệu trong database',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 }

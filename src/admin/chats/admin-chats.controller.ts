@@ -24,6 +24,23 @@ export class AdminChatsController {
     });
   }
 
+  @Get('full-conversations')
+  getFullConversations(
+    @Query('keyword') keyword?: string,
+    @Query('status') status?: string,
+    @Query('address') address?: string,
+    @Query('technicianName') technicianName?: string,
+    @Query('isDangerous') isDangerous?: string,
+  ) {
+    return this.adminChatsService.getFullConversations({
+      keyword,
+      status,
+      address,
+      technicianName,
+      isDangerous,
+    });
+  }
+
   @Get(':id')
   async getChatById(@Param('id', ParseIntPipe) sessionId: number) {
     const session = await this.adminChatsService.getChatById(sessionId);
