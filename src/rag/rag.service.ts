@@ -1,13 +1,14 @@
 import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import { IngestDocumentDto } from './dto/ingest-document.dto';
 
 @Injectable()
 export class RagService {
   private readonly logger = new Logger(RagService.name);
   private genAI: GoogleGenerativeAI;
+  private embeddingModel: GenerativeModel;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -15,6 +16,9 @@ export class RagService {
   ) {
     const apiKey = this.configService.get<string>('GEMINI_API_KEY') || '';
     this.genAI = new GoogleGenerativeAI(apiKey);
+    this.embeddingModel = this.genAI.getGenerativeModel({
+      model: 'gemini-embedding-001',
+    });
   }
 
   /**
@@ -22,8 +26,11 @@ export class RagService {
    */
   private async generateEmbedding(text: string): Promise<number[]> {
     try {
-      const model = this.genAI.getGenerativeModel({ model: 'gemini-embedding-001' });
-      const result = await model.embedContent(text);
+      const result = await this.embeddingModel.embedContent({
+        content: { parts: [{ text }], role: 'user' },
+        // @ts-ignore SDK cũ có thể chưa khai báo field này nhưng API vẫn hỗ trợ.
+        outputDimensionality: 768,
+      });
       return result.embedding.values;
     } catch (error) {
       this.logger.error('Lỗi khi tạo embedding từ Gemini:', error);

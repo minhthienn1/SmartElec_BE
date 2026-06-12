@@ -16,7 +16,7 @@ export class MechanicAiService {
     const apiKey = this.configService.get<string>('GEMINI_API_KEY') || '';
     this.genAI = new GoogleGenerativeAI(apiKey);
     // 1. Khởi tạo Embedding Model (Google đã đổi tên model thành gemini-embedding-2)
-    this.embeddingModel = this.genAI.getGenerativeModel({ model: "gemini-embedding-2" });
+    this.embeddingModel = this.genAI.getGenerativeModel({ model: 'gemini-embedding-001' });
   }
 
   // 2. Viết hàm ingestDocument

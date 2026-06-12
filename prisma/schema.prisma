@@ -294,7 +294,7 @@ model TechnicalDocument {
   content     String      @db.Text // Đoạn nội dung (chunk) đã được xử lý
   category    String?     // Loại thiết bị liên quan (vd: "Máy lạnh", "Tủ lạnh")
   source      String?     // Nguồn gốc tài liệu (vd: "Manual Daikin 2024", "Kỹ thuật viên nội bộ")
-
+  embedding Unsupported("vector(768)")?
   // Phân quyền: BASIC = khách & thợ đều xem được; ADVANCED = chỉ thợ
   accessLevel AccessLevel @default(ADVANCED)
 
