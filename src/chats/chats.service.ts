@@ -31,22 +31,20 @@ export class ChatsService {
 
   private readonly logger = new Logger(ChatsService.name);
 
-  // 0. LẤY DANH SÁCH PHIÊN CHAT CỦA USER (Hộp thư)
   async getUserSessions(userId: number) {
     try {
       return await this.prisma.chatSession.findMany({
         where: {
           AND: [
             { OR: [{ userId: userId }, { technicianId: userId }] },
-            { technicianId: { not: null } },
             {
               OR: [
-                { status: { notIn: ['COMPLETED', 'CANCELLED'] } }, // Đang làm (không phải COMPLETED hay CANCELLED) thì hiện cho cả 2
+                { status: { notIn: ['COMPLETED', 'CANCELLED'] } }, 
                 {
                   AND: [
-                    { userId: userId }, // Chỉ Khách hàng mới thấy đơn COMPLETED
+                    { userId: userId }, 
                     { status: 'COMPLETED' },
-                    { review: { is: null } }, // Và chỉ khi chưa đánh giá
+                    { review: { is: null } }, 
                   ],
                 },
               ],
@@ -56,8 +54,8 @@ export class ChatsService {
         orderBy: { updatedAt: 'desc' },
         include: {
           user: { select: { id: true, fullName: true, avatarUrl: true, role: true } },
-          technician: { select: { id: true, fullName: true, avatarUrl: true, role: true, phoneNumber:true } },
-          review: true, // Thêm include review để check
+          technician: { select: { id: true, fullName: true, avatarUrl: true, role: true, phoneNumber: true } },
+          review: true,
           messages: {
             orderBy: { createdAt: 'desc' },
             take: 1,
@@ -65,8 +63,28 @@ export class ChatsService {
           },
         },
       });
-    } catch (error:any) {
+    } catch (error: any) {
       throw new InternalServerErrorException('Lỗi khi tải danh sách phiên chat: ' + error.message);
+    }
+  }
+
+  async getActiveSessions(userId: number) {
+    try {
+      return await this.prisma.chatSession.findMany({
+        where: {
+          OR: [{ userId: userId }, { technicianId: userId }],
+          status: {
+            in: ['BROADCASTING', 'MATCHED', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'],
+          },
+        },
+        orderBy: { updatedAt: 'desc' },
+        include: {
+          user: { select: { id: true, fullName: true, avatarUrl: true } },
+          technician: { select: { id: true, fullName: true, avatarUrl: true, phoneNumber: true } },
+        },
+      });
+    } catch (error: any) {
+      throw new InternalServerErrorException('Lỗi khi tải danh sách đơn đang hoạt động: ' + error.message);
     }
   }
 
