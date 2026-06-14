@@ -72,7 +72,10 @@ export class AdminChatsService {
     if (query.technicianName?.trim()) {
       and.push({
         technician: {
-          fullName: { contains: query.technicianName.trim(), mode: 'insensitive' },
+          fullName: {
+            contains: query.technicianName.trim(),
+            mode: 'insensitive',
+          },
         },
       });
     }
@@ -120,19 +123,40 @@ export class AdminChatsService {
     longitude: number | null;
     createdAt: Date;
     updatedAt: Date;
-    user: { id: number; fullName: string | null; avatarUrl: string | null; role: 'USER' | 'TECHNICIAN' | 'ADMIN' };
-    technician: { id: number; fullName: string | null; avatarUrl: string | null; role: 'USER' | 'TECHNICIAN' | 'ADMIN' } | null;
+    user: {
+      id: number;
+      fullName: string | null;
+      avatarUrl: string | null;
+      role: 'USER' | 'TECHNICIAN' | 'ADMIN';
+    };
+    technician: {
+      id: number;
+      fullName: string | null;
+      avatarUrl: string | null;
+      role: 'USER' | 'TECHNICIAN' | 'ADMIN';
+    } | null;
     messages?: Array<{
       id: number;
       sessionId: number;
       senderId: number | null;
-      type: 'TEXT' | 'IMAGE' | 'VIDEO' | 'QUOTE_CARD' | 'SYSTEM_LOG' | 'QUOTE_RESPONSE';
+      type:
+        | 'TEXT'
+        | 'IMAGE'
+        | 'VIDEO'
+        | 'QUOTE_CARD'
+        | 'SYSTEM_LOG'
+        | 'QUOTE_RESPONSE';
       content: string;
       metadata: Prisma.JsonValue | null;
       isRead: boolean;
       isDeleted: boolean;
       createdAt: Date;
-      sender: { id: number; fullName: string | null; avatarUrl: string | null; role: 'USER' | 'TECHNICIAN' | 'ADMIN' } | null;
+      sender: {
+        id: number;
+        fullName: string | null;
+        avatarUrl: string | null;
+        role: 'USER' | 'TECHNICIAN' | 'ADMIN';
+      } | null;
     }>;
     assignmentHistories?: Array<{
       id: number;

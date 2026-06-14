@@ -62,7 +62,10 @@ export class AdminAccountsController {
     @Param('id', ParseIntPipe) accountId: number,
     @Body() payload: UpdateAdminAccountDto,
   ) {
-    const account = await this.adminAccountsService.updateAccount(accountId, payload);
+    const account = await this.adminAccountsService.updateAccount(
+      accountId,
+      payload,
+    );
 
     if (!account) {
       throw new NotFoundException('Khong tim thay tai khoan.');
@@ -104,7 +107,10 @@ export class AdminAccountsController {
     @Param('id', ParseIntPipe) accountId: number,
     @Body() body: { password: string },
   ) {
-    return this.adminAccountsService.resetAccountPassword(accountId, body.password);
+    return this.adminAccountsService.resetAccountPassword(
+      accountId,
+      body.password,
+    );
   }
 
   @Delete(':id')

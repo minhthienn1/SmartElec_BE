@@ -1,5 +1,13 @@
 import { Gender } from '@prisma/client';
-import { IsBoolean, IsEmail, IsEnum, IsNumber, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsEmail,
+  IsEnum,
+  IsNumber,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 
 export class UpdateAdminAccountDto {
   @IsOptional()

@@ -1,23 +1,42 @@
-import { Controller, Post, Patch, Body, Param, ParseIntPipe, UseGuards, Req, Logger, BadRequestException } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Patch,
+  Body,
+  Param,
+  ParseIntPipe,
+  UseGuards,
+  Req,
+  Logger,
+  BadRequestException,
+} from '@nestjs/common';
 import { AiService } from './ai.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 @Controller('ai')
 export class AiController {
   private readonly logger = new Logger(AiController.name);
-  
+
   constructor(private readonly aiService: AiService) {}
 
   @UseGuards(JwtAuthGuard)
   @Post('chat')
   async chat(
-    @Req() req, 
-    @Body() body: { message: string; sessionId?: string | number; image?: string; history?: any[] }
+    @Req() req,
+    @Body()
+    body: {
+      message: string;
+      sessionId?: string | number;
+      image?: string;
+      history?: any[];
+    },
   ) {
     const userId = Number(req.user?.id || req.user?.userId || req.user?.sub);
     if (!userId || isNaN(userId)) {
       this.logger.error(`Lỗi JWT: ${JSON.stringify(req.user)}`);
-      throw new BadRequestException('Lỗi xác thực: Không tìm thấy ID người dùng.');
+      throw new BadRequestException(
+        'Lỗi xác thực: Không tìm thấy ID người dùng.',
+      );
     }
 
     // Chuyển đổi sessionId sang kiểu số (number), nếu không có hoặc truyền lên null/undefined thì để là null
@@ -25,11 +44,11 @@ export class AiController {
 
     // ĐƯA sessionIdParam VÀO VỊ TRÍ THỨ 3 (Đúng thứ tự hàm chatWithAI mới sửa ở ai.service.ts)
     return this.aiService.chatWithAI(
-      userId, 
-      body.message, 
-      sessionIdParam, 
-      body.image, 
-      body.history || []
+      userId,
+      body.message,
+      sessionIdParam,
+      body.image,
+      body.history || [],
     );
   }
 

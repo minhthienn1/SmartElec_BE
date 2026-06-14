@@ -1,5 +1,9 @@
 import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
-import { GoogleGenerativeAI, GenerativeModel, SchemaType } from '@google/generative-ai';
+import {
+  GoogleGenerativeAI,
+  GenerativeModel,
+  SchemaType,
+} from '@google/generative-ai';
 import { PrismaService } from '../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
 
@@ -77,9 +81,12 @@ const responseSchema: any = {
     state: {
       type: SchemaType.OBJECT,
       properties: {
-        device:  { type: SchemaType.STRING, description: 'Tên thiết bị đang gặp sự cố' },
+        device: {
+          type: SchemaType.STRING,
+          description: 'Tên thiết bị đang gặp sự cố',
+        },
         symptom: { type: SchemaType.STRING, description: 'Mô tả triệu chứng' },
-        ctx:     { type: SchemaType.STRING, description: 'Context phụ thêm' },
+        ctx: { type: SchemaType.STRING, description: 'Context phụ thêm' },
         phase: {
           type: SchemaType.STRING,
           enum: ['COLLECTING', 'DIAGNOSING', 'READY_TO_BOOK'],
@@ -122,22 +129,21 @@ export class AiService {
   private genAI: GoogleGenerativeAI;
   private model: GenerativeModel;
   private readonly logger = new Logger(AiService.name);
-  
 
   // Rate limiting: MAP lưu timestamp request gần nhất theo userId
   private lastRequestTime = new Map<number, number>();
   private sanitizeUserMessage(message: string): string {
     // Danh sách các từ khóa mà người dùng thường dùng để "hack" prompt
     const forbiddenKeywords = [
-    /\[\s*THÔNG TIN THIẾT BỊ KHÁCH HÀNG\s*\]/gi,
-    /\[\s*KIẾN THỨC TỪ HỆ THỐNG\s*\]/gi,
-    /Hệ\s*thống\s*:/gi,
-    /Từ\s*giờ\s*hãy/gi,
-    /Quên\s*mọi\s*chỉ\s*dẫn/gi
-  ];
+      /\[\s*THÔNG TIN THIẾT BỊ KHÁCH HÀNG\s*\]/gi,
+      /\[\s*KIẾN THỨC TỪ HỆ THỐNG\s*\]/gi,
+      /Hệ\s*thống\s*:/gi,
+      /Từ\s*giờ\s*hãy/gi,
+      /Quên\s*mọi\s*chỉ\s*dẫn/gi,
+    ];
 
     let cleanMessage = message;
-    forbiddenKeywords.forEach(regex => {
+    forbiddenKeywords.forEach((regex) => {
       cleanMessage = cleanMessage.replace(regex, '(Nội dung bị lọc)');
     });
 
@@ -196,7 +202,9 @@ export class AiService {
 
     if (this.lastRequestTime.size > 10_000) {
       this.lastRequestTime.clear();
-      this.logger.warn('♻️ [RateLimit] Đã xóa Map rate-limit (đã vượt 10k entries)');
+      this.logger.warn(
+        '♻️ [RateLimit] Đã xóa Map rate-limit (đã vượt 10k entries)',
+      );
     }
 
     let sessionId: number | null = sessionIdParam;
@@ -235,18 +243,31 @@ export class AiService {
         where: { id: userId },
         select: { role: true },
       });
-      const accessLevel = (user?.role === 'TECHNICIAN' || user?.role === 'ADMIN') ? 'ADVANCED' : 'BASIC';
-      
+      const accessLevel =
+        user?.role === 'TECHNICIAN' || user?.role === 'ADMIN'
+          ? 'ADVANCED'
+          : 'BASIC';
+
       let ragContext = '';
       try {
-        const ragRes = await this.mechanicAiService.findRelevantDocs(message, accessLevel, 3);
-        let results = ragRes.results as any[];
+        const ragRes = await this.mechanicAiService.findRelevantDocs(
+          message,
+          accessLevel,
+          3,
+        );
+        const results = ragRes.results as any[];
 
-        const errorCodesMatch = message.match(/\b[A-Z][0-9]\b|\b[A-Z]{2,3}[0-9]?\b/g); 
+        const errorCodesMatch = message.match(
+          /\b[A-Z][0-9]\b|\b[A-Z]{2,3}[0-9]?\b/g,
+        );
         if (errorCodesMatch && errorCodesMatch.length > 0) {
           results.sort((a, b) => {
-            const aHasCode = errorCodesMatch.some(c => a.content.includes(c) || a.title.includes(c));
-            const bHasCode = errorCodesMatch.some(c => b.content.includes(c) || b.title.includes(c));
+            const aHasCode = errorCodesMatch.some(
+              (c) => a.content.includes(c) || a.title.includes(c),
+            );
+            const bHasCode = errorCodesMatch.some(
+              (c) => b.content.includes(c) || b.title.includes(c),
+            );
             if (aHasCode && !bHasCode) return -1;
             if (!aHasCode && bHasCode) return 1;
             return 0;
@@ -254,7 +275,12 @@ export class AiService {
         }
 
         if (results && results.length > 0) {
-          const docsText = results.map((d: any) => `- [${d.title}] (Nguồn: ${d.source || 'Tài liệu nội bộ'}): ${d.content}`).join('\n\n');
+          const docsText = results
+            .map(
+              (d: any) =>
+                `- [${d.title}] (Nguồn: ${d.source || 'Tài liệu nội bộ'}): ${d.content}`,
+            )
+            .join('\n\n');
           ragContext = `
 [KIẾN THỨC TỪ HỆ THỐNG]:
 ${docsText}
@@ -267,13 +293,17 @@ ${docsText}
       }
 
       // ── 3. RLHF: TIÊU CHUẨN VÀNG ────────────────
-      const currentCategory = (prevState as any)?.device || (devices.length > 0 ? devices[0].category : '');
+      const currentCategory =
+        prevState?.device || (devices.length > 0 ? devices[0].category : '');
       let rlhfInstruction = '';
       if (currentCategory) {
         const examples = await this.getGoldenExamples(currentCategory, 2);
         if (examples.golden.length > 0 || examples.negative) {
           const goldenText = examples.golden
-            .map((l, i) => `   [Tốt #${i + 1}] Khách: "${l.userMsg}"\n   AI: "${(l.aiResponse ?? '').substring(0, 300)}..."`)
+            .map(
+              (l, i) =>
+                `   [Tốt #${i + 1}] Khách: "${l.userMsg}"\n   AI: "${(l.aiResponse ?? '').substring(0, 300)}..."`,
+            )
             .join('\n\n');
           const negativeText = examples.negative
             ? `   [Xấu] Khách: "${examples.negative.userMsg}"\n   AI: "${(examples.negative.aiResponse ?? '').substring(0, 300)}..."`
@@ -286,7 +316,9 @@ ${goldenText || '   (Chưa có)'}
 [VÍ DỤ CẦN TRÁNH GÂY KHÓ CHỊU CHO KHÁCH]:
 ${negativeText || '   (Chưa có)'}
 `;
-          this.logger.log(`🧠 [RLHF] Injected ${examples.golden.length} Golden cho category "${currentCategory}"`);
+          this.logger.log(
+            `🧠 [RLHF] Injected ${examples.golden.length} Golden cho category "${currentCategory}"`,
+          );
         }
       }
 
@@ -305,23 +337,29 @@ ${negativeText || '   (Chưa có)'}
       </user_input>
 
       Hãy phân tích và phản hồi dựa trên vai trò SmartElec Buddy.`;
-      
+
       const parts: any[] = [{ text: userPrompt }];
       if (imageBase64) {
-        parts.push({ inlineData: { mimeType: 'image/jpeg', data: imageBase64 } });
+        parts.push({
+          inlineData: { mimeType: 'image/jpeg', data: imageBase64 },
+        });
       }
 
       // ✅ LỌC LỊCH SỬ GEMINI
       const cleanHistory: { role: string; parts: { text: string }[] }[] = [];
-      let expectedRole = 'user'; 
+      let expectedRole = 'user';
       for (const h of history.slice(-10)) {
-        const mappedRole = h.role === 'assistant' || h.role === 'model' ? 'model' : 'user';
+        const mappedRole =
+          h.role === 'assistant' || h.role === 'model' ? 'model' : 'user';
         if (mappedRole === expectedRole) {
           cleanHistory.push({ role: mappedRole, parts: [{ text: h.content }] });
           expectedRole = expectedRole === 'user' ? 'model' : 'user';
         }
       }
-      if (cleanHistory.length > 0 && cleanHistory[cleanHistory.length - 1].role === 'user') {
+      if (
+        cleanHistory.length > 0 &&
+        cleanHistory[cleanHistory.length - 1].role === 'user'
+      ) {
         cleanHistory.pop();
       }
 
@@ -335,7 +373,9 @@ ${negativeText || '   (Chưa có)'}
       try {
         parsed = JSON.parse(rawText);
       } catch (e) {
-        this.logger.warn(`⚠️ JSON.parse thất bại. rawText: ${rawText.substring(0, 200)}`);
+        this.logger.warn(
+          `⚠️ JSON.parse thất bại. rawText: ${rawText.substring(0, 200)}`,
+        );
         parsed = {
           text: 'Dạ em chưa hiểu rõ câu hỏi, bác vui lòng mô tả thêm ạ!',
           state: prevState || SAFE_FALLBACK_STATE,
@@ -344,27 +384,41 @@ ${negativeText || '   (Chưa có)'}
       }
 
       // Nếu đổi thiết bị so với log cũ, ép làm sạch trạng thái nguy hiểm của thiết bị cũ luôn
-      if (prevState && parsed.state?.device && parsed.state.device !== prevState.device) {
-        this.logger.log(`⚙️ Reset mức độ rủi ro do đổi thiết bị từ ${prevState.device} sang ${parsed.state.device}`);
+      if (
+        prevState &&
+        parsed.state?.device &&
+        parsed.state.device !== prevState.device
+      ) {
+        this.logger.log(
+          `⚙️ Reset mức độ rủi ro do đổi thiết bị từ ${prevState.device} sang ${parsed.state.device}`,
+        );
       }
 
       // ── 6. XỬ LÝ BOOKING ───────────────────
       if (parsed.state?.risk === 'RED' || parsed.is_booking_triggered) {
-        
         // Nếu dính mức ĐỎ, ta chủ động ép cờ booking thành true để Flutter hiện nút luôn
         if (parsed.state?.risk === 'RED') {
           parsed.is_booking_triggered = true;
-          
+
           // Thêm một câu hướng dẫn khách bấm nút khẩn cấp nếu AI chưa kịp nói
-          if (!parsed.text.includes('[GỌI THỢ]') && !parsed.text.includes('Đặt thợ ngay')) {
+          if (
+            !parsed.text.includes('[GỌI THỢ]') &&
+            !parsed.text.includes('Đặt thợ ngay')
+          ) {
             parsed.text += `\n\n🚨 **TÌNH HUỐNG KHẨN CẤP:** Để hỗ trợ bác xử lý sự cố nguy hiểm này nhanh nhất, cháu đã mở cổng điều phối. Bác vui lòng nhấn vào nút **[Đặt thợ ngay]** màu xanh lá bên dưới để kỹ thuật viên chạy qua hỗ trợ bác lập tức nhé!`;
           }
         }
 
-        const device = parsed.state?.device || (prevState as any)?.device || 'thiết bị';
-        const symptom = parsed.state?.symptom || (prevState as any)?.symptom || 'sự cố';
-        
-       sessionId = await this.saveRepairCase(userId, device, symptom, parsed.text || 'Booking via AI', sessionId);
+        const device = parsed.state?.device || prevState?.device || 'thiết bị';
+        const symptom = parsed.state?.symptom || prevState?.symptom || 'sự cố';
+
+        sessionId = await this.saveRepairCase(
+          userId,
+          device,
+          symptom,
+          parsed.text || 'Booking via AI',
+          sessionId,
+        );
 
         return {
           ...parsed,
@@ -375,7 +429,10 @@ ${negativeText || '   (Chưa có)'}
 
       // ── 7. ĐỒNG BỘ DANGER KEYWORDS ──────────────────────────────────
       if (parsed.state?.risk === 'RED') {
-        if (!parsed.text.includes('cầu dao') && !parsed.text.includes('nguy hiểm')) {
+        if (
+          !parsed.text.includes('cầu dao') &&
+          !parsed.text.includes('nguy hiểm')
+        ) {
           parsed.text = `⚠️ **LƯU Ý AN TOÀN:** Có dấu hiệu nguy hiểm nghiêm trọng, bác nên kiểm tra kỹ nguồn điện hoặc ngắt cầu dao để đảm bảo an toàn trước nhé!\n\n${parsed.text}`;
         }
       }
@@ -394,14 +451,19 @@ ${negativeText || '   (Chưa có)'}
       // ── 9. LƯU REASONING LOG ──────────────────
       let logId: number | null = null;
       try {
-        logId = await this.saveReasoningLog(userId, sessionId, message, prevState, parsed);
+        logId = await this.saveReasoningLog(
+          userId,
+          sessionId,
+          message,
+          prevState,
+          parsed,
+        );
       } catch (e) {
-        this.prisma.aiReasoningLog
+        this.prisma.aiReasoningLog;
         this.logger.error('Failed to save reasoning log', e);
       }
 
       return { ...parsed, sessionId, logId };
-
     } catch (error: any) {
       this.logger.error(`AI Error: ${error.message}`);
       if (error.message?.includes('429')) {
@@ -411,9 +473,9 @@ ${negativeText || '   (Chưa có)'}
         };
       }
       if (error instanceof HttpException) throw error;
-      return { 
-        text: 'Dạ hệ thống AI đang bận, bác thử lại sau xíu nha!', 
-        state: prevState || null 
+      return {
+        text: 'Dạ hệ thống AI đang bận, bác thử lại sau xíu nha!',
+        state: prevState || null,
       };
     }
   }
@@ -430,7 +492,9 @@ ${negativeText || '   (Chưa có)'}
     parsed: any,
   ): Promise<number | null> {
     try {
-      const isBooking = parsed.is_booking_triggered === true || parsed.is_booking_triggered === 'true';
+      const isBooking =
+        parsed.is_booking_triggered === true ||
+        parsed.is_booking_triggered === 'true';
       const score = isBooking ? 10 : 0;
       const deviceCategory = parsed?.state?.device || null;
 
@@ -474,7 +538,7 @@ ${negativeText || '   (Chưa có)'}
             where: { id: sessionId },
             data: {
               deviceType, // Cập nhật tên thiết bị chuẩn hóa từ AI
-              symptom,    // Cập nhật triệu chứng mới nhất
+              symptom, // Cập nhật triệu chứng mới nhất
               aiSummary: summary, // Cập nhật câu trả lời mới nhất từ AI làm tóm tắt
             },
           });
@@ -490,7 +554,7 @@ ${negativeText || '   (Chưa có)'}
           createdAt: { gte: new Date(Date.now() - 1000 * 60 * 30) },
         },
       });
-      
+
       if (recentCase) {
         const updated = await this.prisma.chatSession.update({
           where: { id: recentCase.id },
@@ -501,11 +565,20 @@ ${negativeText || '   (Chưa có)'}
 
       // 3. Nếu hoàn toàn là cuộc trò chuyện mới tinh -> Tiến hành tạo mới (CREATE)
       const newCase = await this.prisma.chatSession.create({
-        data: { userId, deviceType, symptom, aiSummary: summary, status: 'AI_CONSULTING' },
+        data: {
+          userId,
+          deviceType,
+          symptom,
+          aiSummary: summary,
+          status: 'AI_CONSULTING',
+        },
       });
       return newCase.id;
     } catch (error: any) {
-      this.logger.error('❌ Lỗi khi lưu/cập nhật ChatSession trong saveRepairCase:', error);
+      this.logger.error(
+        '❌ Lỗi khi lưu/cập nhật ChatSession trong saveRepairCase:',
+        error,
+      );
       return null;
     }
   }
@@ -514,7 +587,9 @@ ${negativeText || '   (Chưa có)'}
   // RLHF: Lưu phản hồi Like/Dislike vào AiReasoningLog
   // ─────────────────────────────────────────────────────────────────
   async saveFeedback(logId: number, feedback: 'LIKE' | 'DISLIKE') {
-    const log = await this.prisma.aiReasoningLog.findUnique({ where: { id: logId } });
+    const log = await this.prisma.aiReasoningLog.findUnique({
+      where: { id: logId },
+    });
     if (!log) {
       throw new Error(`Không tìm thấy AI log với ID = ${logId}`);
     }
@@ -523,12 +598,14 @@ ${negativeText || '   (Chưa có)'}
 
     await this.prisma.aiReasoningLog.update({
       where: { id: logId },
-      data: { 
+      data: {
         aiFeedback: feedback,
-        score: { increment: scoreIncrement }
+        score: { increment: scoreIncrement },
       },
     });
-    this.logger.log(`👍 [RLHF] User #${log.userId} đã ${feedback} log #${logId}. Score được cập nhật: ${scoreIncrement > 0 ? '+' : ''}${scoreIncrement}`);
+    this.logger.log(
+      `👍 [RLHF] User #${log.userId} đã ${feedback} log #${logId}. Score được cập nhật: ${scoreIncrement > 0 ? '+' : ''}${scoreIncrement}`,
+    );
     return { success: true, feedback };
   }
 
@@ -538,14 +615,14 @@ ${negativeText || '   (Chưa có)'}
   async getGoldenExamples(category: string, limit: number = 2) {
     // 1. Lấy top câu tốt nhất liên quan đến loại thiết bị
     const golden = await this.prisma.aiReasoningLog.findMany({
-      where: { 
+      where: {
         deviceCategory: { contains: category, mode: 'insensitive' },
         OR: [{ score: { gt: 5 } }, { isGolden: true }],
-        aiResponse: { not: null }
+        aiResponse: { not: null },
       },
       orderBy: { score: 'desc' },
       take: limit,
-      select: { userMsg: true, aiResponse: true }
+      select: { userMsg: true, aiResponse: true },
     });
 
     // 2. Lấy 1 câu xấu nhất (để làm negative example)
@@ -553,10 +630,10 @@ ${negativeText || '   (Chưa có)'}
       where: {
         deviceCategory: { contains: category, mode: 'insensitive' },
         score: { lt: 0 },
-        aiResponse: { not: null }
+        aiResponse: { not: null },
       },
       orderBy: { score: 'asc' },
-      select: { userMsg: true, aiResponse: true }
+      select: { userMsg: true, aiResponse: true },
     });
 
     return { golden, negative };

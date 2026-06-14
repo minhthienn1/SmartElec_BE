@@ -103,7 +103,11 @@ export class AdminReviewsService {
     createdAt: Date;
     user: { fullName: string | null; phoneNumber: string };
     technician: { fullName: string | null; phoneNumber: string };
-    session: { deviceType: string | null; symptom: string | null; address: string | null };
+    session: {
+      deviceType: string | null;
+      symptom: string | null;
+      address: string | null;
+    };
   }) {
     return {
       id: review.id,

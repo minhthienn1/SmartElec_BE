@@ -13,15 +13,15 @@ export class UploadService {
     // Khởi tạo S3Client với cấu hình Cloudflare R2 từ .env
     this.s3Client = new S3Client({
       region: 'auto', // R2 luôn dùng 'auto'
-      endpoint: process.env.R2_ENDPOINT as string,
+      endpoint: process.env.R2_ENDPOINT,
       credentials: {
-        accessKeyId: process.env.R2_ACCESS_KEY_ID as string,
-        secretAccessKey: process.env.R2_SECRET_ACCESS_KEY as string,
+        accessKeyId: process.env.R2_ACCESS_KEY_ID,
+        secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
       },
     });
 
-    this.bucketName = process.env.R2_BUCKET_NAME as string;
-    this.publicUrl = process.env.R2_PUBLIC_URL as string;
+    this.bucketName = process.env.R2_BUCKET_NAME;
+    this.publicUrl = process.env.R2_PUBLIC_URL;
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -30,10 +30,7 @@ export class UploadService {
   // - folder: Thư mục trên R2 (VD: 'chat-images', 'avatars')
   // - Trả về URL công khai của file vừa upload
   // ─────────────────────────────────────────────────────────────────
-  async uploadFile(
-    file: Express.Multer.File,
-    folder: string,
-  ): Promise<string> {
+  async uploadFile(file: Express.Multer.File, folder: string): Promise<string> {
     // Tạo tên file duy nhất: chat-images/1714300000000-photo.jpg
     const key = `${folder}/${Date.now()}-${file.originalname}`;
 
@@ -52,7 +49,7 @@ export class UploadService {
 
       console.log(`☁️ [R2] Upload thành công: ${publicFileUrl}`);
       return publicFileUrl;
-    } catch (error : any) {
+    } catch (error: any) {
       console.error(`❌ [R2] Upload thất bại:`, error.message);
       throw new InternalServerErrorException(
         'Không thể upload file: ' + error.message,

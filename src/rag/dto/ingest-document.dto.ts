@@ -1,4 +1,10 @@
-import { IsString, IsOptional, IsEnum, IsNotEmpty, MaxLength } from 'class-validator';
+import {
+  IsString,
+  IsOptional,
+  IsEnum,
+  IsNotEmpty,
+  MaxLength,
+} from 'class-validator';
 import { AccessLevel } from '@prisma/client';
 
 export class IngestDocumentDto {

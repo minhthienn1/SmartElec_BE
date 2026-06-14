@@ -13,25 +13,37 @@ import { GoogleLoginDto } from './dto/google-login.dto';
 import { SetPasswordDto } from './dto/set-password.dto';
 import { v4 as uuidv4 } from 'uuid';
 import * as admin from 'firebase-admin';
+import { RequestResetOtpDto } from './dto/request-reset-otp.dto';
+import { VerifyResetOtpDto } from './dto/verify-reset-otp.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
+import { ForgotPasswordOtpStore } from './forgot-password-otp.store';
+import { MailService } from './mail.service';
 
 @Injectable()
 export class AuthService {
   constructor(
-    private prisma: PrismaService,
-    private jwtService: JwtService,
+    private readonly prisma: PrismaService,
+    private readonly jwtService: JwtService,
+    private readonly forgotPasswordOtpStore: ForgotPasswordOtpStore,
+    private readonly mailService: MailService,
   ) {}
 
   // 1. Chức năng Đăng ký (Cập nhật để nhận RegisterDto)
   async register(dto: RegisterDto) {
-    const { email, phoneNumber, password, fullName, gender, address, avatarUrl } = dto;
+    const {
+      email,
+      phoneNumber,
+      password,
+      fullName,
+      gender,
+      address,
+      avatarUrl,
+    } = dto;
 
     // Kiểm tra xem Email HOẶC Số điện thoại đã tồn tại chưa
     const userExists = await this.prisma.user.findFirst({
       where: {
-        OR: [
-          { phoneNumber: phoneNumber },
-          { email: email },
-        ],
+        OR: [{ phoneNumber: phoneNumber }, { email: email }],
       },
     });
 
@@ -160,9 +172,13 @@ export class AuthService {
         },
       });
 
-      console.log(`🔵 [ZALO] Người dùng MỚI đăng ký qua Zalo: ID=${user.id}, ZaloID=${zaloId}, Tên="${name}"`);
+      console.log(
+        `🔵 [ZALO] Người dùng MỚI đăng ký qua Zalo: ID=${user.id}, ZaloID=${zaloId}, Tên="${name}"`,
+      );
     } else {
-      console.log(`🔵 [ZALO] Người dùng đăng nhập qua Zalo: ID=${user.id}, ZaloID=${zaloId}, Tên="${user.fullName}"`);
+      console.log(
+        `🔵 [ZALO] Người dùng đăng nhập qua Zalo: ID=${user.id}, ZaloID=${zaloId}, Tên="${user.fullName}"`,
+      );
     }
 
     // Cập nhật lastLogin
@@ -211,7 +227,9 @@ export class AuthService {
     });
 
     if (phoneExists && phoneExists.id !== userId) {
-      throw new ConflictException('Số điện thoại này đã được đăng ký bởi tài khoản khác!');
+      throw new ConflictException(
+        'Số điện thoại này đã được đăng ký bởi tài khoản khác!',
+      );
     }
 
     // Băm mật khẩu mới
@@ -228,10 +246,13 @@ export class AuthService {
       },
     });
 
-    console.log(`🔵 [ZALO] User ID=${userId} đã hoàn tất đặt mật khẩu và SĐT: ${dto.phoneNumber}`);
+    console.log(
+      `🔵 [ZALO] User ID=${userId} đã hoàn tất đặt mật khẩu và SĐT: ${dto.phoneNumber}`,
+    );
 
     return {
-      message: 'Đặt mật khẩu và số điện thoại thành công! Chào mừng bạn đến SmartElec.',
+      message:
+        'Đặt mật khẩu và số điện thoại thành công! Chào mừng bạn đến SmartElec.',
     };
   }
 
@@ -246,21 +267,33 @@ export class AuthService {
     try {
       // Kiểm tra Firebase Admin đã được khởi tạo chưa
       if (admin.apps.length === 0) {
-        console.error('❌ [GOOGLE] Firebase Admin chưa được khởi tạo! apps.length = 0');
+        console.error(
+          '❌ [GOOGLE] Firebase Admin chưa được khởi tạo! apps.length = 0',
+        );
         throw new Error('Firebase Admin chưa được khởi tạo');
       }
-      console.log(`🔍 [GOOGLE] Bắt đầu verify idToken, Firebase apps: ${admin.apps.length}`);
+      console.log(
+        `🔍 [GOOGLE] Bắt đầu verify idToken, Firebase apps: ${admin.apps.length}`,
+      );
       decodedToken = await admin.auth().verifyIdToken(idToken);
       console.log(`✅ [GOOGLE] Verify thành công, uid=${decodedToken.uid}`);
     } catch (error) {
-      console.error('❌ [GOOGLE] Xác thực Firebase ID Token thất bại:', (error as Error).message);
+      console.error(
+        '❌ [GOOGLE] Xác thực Firebase ID Token thất bại:',
+        (error as Error).message,
+      );
       console.error('❌ [GOOGLE] Full error:', error);
-      throw new UnauthorizedException(`Token Google không hợp lệ: ${(error as Error).message}`);
+      throw new UnauthorizedException(
+        `Token Google không hợp lệ: ${(error as Error).message}`,
+      );
     }
 
     const googleId = decodedToken.uid;
     const email = decodedToken.email || null;
-    const name = decodedToken.name || decodedToken.email?.split('@')[0] || 'Người dùng Google';
+    const name =
+      decodedToken.name ||
+      decodedToken.email?.split('@')[0] ||
+      'Người dùng Google';
     const picture = decodedToken.picture || null;
 
     // 2. Tìm user theo googleId
@@ -283,7 +316,9 @@ export class AuthService {
             where: { id: existingUserByEmail.id },
             data: { googleId },
           });
-          console.log(`🟢 [GOOGLE] Liên kết Google vào tài khoản hiện có: ID=${user.id}, Email=${email}`);
+          console.log(
+            `🟢 [GOOGLE] Liên kết Google vào tài khoản hiện có: ID=${user.id}, Email=${email}`,
+          );
         }
       }
 
@@ -308,10 +343,14 @@ export class AuthService {
           },
         });
 
-        console.log(`🟢 [GOOGLE] Người dùng MỚI đăng ký qua Google: ID=${user.id}, GoogleID=${googleId}, Email=${email}`);
+        console.log(
+          `🟢 [GOOGLE] Người dùng MỚI đăng ký qua Google: ID=${user.id}, GoogleID=${googleId}, Email=${email}`,
+        );
       }
     } else {
-      console.log(`🟢 [GOOGLE] Người dùng đăng nhập qua Google: ID=${user.id}, GoogleID=${googleId}, Tên="${user.fullName}"`);
+      console.log(
+        `🟢 [GOOGLE] Người dùng đăng nhập qua Google: ID=${user.id}, GoogleID=${googleId}, Tên="${user.fullName}"`,
+      );
     }
 
     // 3. Cập nhật lastLogin
@@ -336,5 +375,84 @@ export class AuthService {
       loginMethod: 'GOOGLE',
       access_token: await this.jwtService.signAsync(payload),
     };
+  }
+
+  async requestResetOtp(dto: RequestResetOtpDto) {
+    const email = this.normalizeEmail(dto.email);
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Email không tồn tại trong hệ thống.');
+    }
+
+    const otp = this.generateOtp();
+    const ttlMs = Number(
+      process.env.FORGOT_PASSWORD_OTP_TTL_MS ?? 5 * 60 * 1000,
+    );
+
+    await this.forgotPasswordOtpStore.save(email, otp, ttlMs);
+    await this.mailService.sendPasswordResetOtp(email, otp);
+
+    return {
+      message: 'Đã gửi mã OTP về email của bạn.',
+    };
+  }
+
+  async verifyResetOtp(dto: VerifyResetOtpDto) {
+    const email = this.normalizeEmail(dto.email);
+    await this.assertValidForgotPasswordOtp(email, dto.otp);
+
+    return {
+      message: 'Xác minh OTP thành công.',
+      verified: true,
+    };
+  }
+
+  async resetPassword(dto: ResetPasswordDto) {
+    const email = this.normalizeEmail(dto.email);
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Email không tồn tại trong hệ thống.');
+    }
+
+    await this.assertValidForgotPasswordOtp(email, dto.otp);
+
+    const hashedPassword = await bcrypt.hash(dto.newPassword, 10);
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { password: hashedPassword },
+    });
+
+    await this.forgotPasswordOtpStore.delete(email);
+
+    return {
+      message: 'Đặt lại mật khẩu thành công.',
+    };
+  }
+
+  private async assertValidForgotPasswordOtp(email: string, otp: string) {
+    const record = await this.forgotPasswordOtpStore.get(email);
+
+    if (!record) {
+      throw new UnauthorizedException('OTP không hợp lệ hoặc đã hết hạn.');
+    }
+
+    if (record.otp !== otp) {
+      throw new UnauthorizedException('OTP không hợp lệ hoặc đã hết hạn.');
+    }
+  }
+
+  private normalizeEmail(email: string) {
+    return email.trim().toLowerCase();
+  }
+
+  private generateOtp() {
+    return `${Math.floor(100000 + Math.random() * 900000)}`;
   }
 }

@@ -39,7 +39,9 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       client.data.userId = payload.sub;
       const userRoom = `user_${payload.sub}`;
       client.join(userRoom);
-      console.log(`⚡ [WS] User ${payload.sub} authenticated & joined ${userRoom}`);
+      console.log(
+        `⚡ [WS] User ${payload.sub} authenticated & joined ${userRoom}`,
+      );
     } catch (error) {
       client.disconnect();
     }
@@ -116,7 +118,8 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       // Cập nhật inbox cho đối phương
       const session = await this.chatsService.getSessionById(data.sessionId);
       if (session) {
-        const recipientId = userId === session.userId ? session.technicianId : session.userId;
+        const recipientId =
+          userId === session.userId ? session.technicianId : session.userId;
         if (recipientId) {
           this.server.to(`user_${recipientId}`).emit('inbox_update', {
             sessionId: data.sessionId,

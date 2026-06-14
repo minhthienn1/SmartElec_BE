@@ -52,7 +52,11 @@ export class ChatHistoryController {
     }
 
     const userId = req.user.userId;
-    return this.chatHistoryService.saveSession(userId, body.title, body.summary);
+    return this.chatHistoryService.saveSession(
+      userId,
+      body.title,
+      body.summary,
+    );
   }
 
   /**

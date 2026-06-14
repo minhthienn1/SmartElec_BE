@@ -16,7 +16,13 @@ export class MechanicAiController {
     @Body('source') source?: string,
     @Body('accessLevel') accessLevel?: 'BASIC' | 'ADVANCED',
   ) {
-    return this.mechanicAiService.ingestDocument(title, content, category, source, accessLevel);
+    return this.mechanicAiService.ingestDocument(
+      title,
+      content,
+      category,
+      source,
+      accessLevel,
+    );
   }
 
   // 4. API Search (Retrieval)
@@ -28,6 +34,10 @@ export class MechanicAiController {
   ) {
     const accessLevel = level || 'BASIC';
     const limitNum = limit ? parseInt(limit, 10) : 3;
-    return this.mechanicAiService.findRelevantDocs(query, accessLevel, limitNum);
+    return this.mechanicAiService.findRelevantDocs(
+      query,
+      accessLevel,
+      limitNum,
+    );
   }
 }

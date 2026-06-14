@@ -32,7 +32,9 @@ export class AdminAiReasoningLogsService {
   constructor(private readonly prisma: PrismaService) {}
 
   /** Xây dựng bộ lọc truy vấn log suy luận AI theo các tham số admin gửi lên. */
-  private buildWhere(query: AdminAiReasoningQuery): Prisma.AiReasoningLogWhereInput {
+  private buildWhere(
+    query: AdminAiReasoningQuery,
+  ): Prisma.AiReasoningLogWhereInput {
     const where: Prisma.AiReasoningLogWhereInput = {};
     const and: Prisma.AiReasoningLogWhereInput[] = [];
 
@@ -143,7 +145,12 @@ export class AdminAiReasoningLogsService {
     if (riskLevel === 'RED') return 'CRITICAL';
     if (riskLevel === 'YELLOW') return 'MEDIUM';
     if (riskLevel === 'GREEN') return 'LOW';
-    if (riskLevel === 'HIGH' || riskLevel === 'MEDIUM' || riskLevel === 'LOW' || riskLevel === 'CRITICAL') {
+    if (
+      riskLevel === 'HIGH' ||
+      riskLevel === 'MEDIUM' ||
+      riskLevel === 'LOW' ||
+      riskLevel === 'CRITICAL'
+    ) {
       return riskLevel;
     }
 
@@ -153,11 +160,15 @@ export class AdminAiReasoningLogsService {
   /** Chuẩn hóa một bản ghi log AI từ database sang shape FE admin cần hiển thị. */
   private mapLog(
     log: ReasoningLogRecord,
-    userMap: Map<number, { id: number; fullName: string | null; phoneNumber: string }>,
+    userMap: Map<
+      number,
+      { id: number; fullName: string | null; phoneNumber: string }
+    >,
     sessionMap: Map<number, { id: number }>,
   ) {
     const user = userMap.get(log.userId);
-    const session = log.sessionId != null ? sessionMap.get(log.sessionId) : undefined;
+    const session =
+      log.sessionId != null ? sessionMap.get(log.sessionId) : undefined;
 
     return {
       id: log.id,

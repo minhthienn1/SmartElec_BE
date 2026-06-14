@@ -21,12 +21,20 @@ export class UploadController {
   @UseInterceptors(FileInterceptor('file'))
   async uploadImage(@UploadedFile() file: Express.Multer.File) {
     if (!file) {
-      throw new BadRequestException('Không tìm thấy file. Vui lòng chọn ảnh để upload.');
+      throw new BadRequestException(
+        'Không tìm thấy file. Vui lòng chọn ảnh để upload.',
+      );
     }
 
     const allowedMimeTypes = [
-      'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/heic',
-      'video/mp4', 'video/quicktime', 'video/x-matroska'
+      'image/jpeg',
+      'image/png',
+      'image/webp',
+      'image/gif',
+      'image/heic',
+      'video/mp4',
+      'video/quicktime',
+      'video/x-matroska',
     ];
     if (!allowedMimeTypes.includes(file.mimetype)) {
       throw new BadRequestException(

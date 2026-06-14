@@ -15,5 +15,3 @@ import { JobsModule } from '../jobs/jobs.module';
   exports: [ChatsService],
 })
 export class ChatsModule {}
-
-

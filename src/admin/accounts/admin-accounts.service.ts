@@ -1,4 +1,8 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Gender, Prisma, UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -83,9 +87,13 @@ export class AdminAccountsService {
     };
   }) {
     const repairJobsCount =
-      user.role === 'TECHNICIAN' ? user._count.technicianSessions : user._count.chatSessions;
+      user.role === 'TECHNICIAN'
+        ? user._count.technicianSessions
+        : user._count.chatSessions;
     const reviewsCount =
-      user.role === 'TECHNICIAN' ? user._count.reviewsReceived : user._count.reviewsGiven;
+      user.role === 'TECHNICIAN'
+        ? user._count.reviewsReceived
+        : user._count.reviewsGiven;
 
     return {
       id: String(user.id),
@@ -297,7 +305,8 @@ export class AdminAccountsService {
       unverified: summarySource.filter((item) => !item.isVerified).length,
       online: summarySource.filter((item) => item.isOnline).length,
       customers: summarySource.filter((item) => item.role === 'USER').length,
-      technicians: summarySource.filter((item) => item.role === 'TECHNICIAN').length,
+      technicians: summarySource.filter((item) => item.role === 'TECHNICIAN')
+        .length,
       admins: summarySource.filter((item) => item.role === 'ADMIN').length,
     };
 
@@ -317,7 +326,10 @@ export class AdminAccountsService {
   async updateAccount(accountId: number, payload: UpdateAdminAccountDto) {
     const current = await this.getExistingAccount(accountId);
 
-    const nextEmail = payload.email === undefined ? undefined : this.normalizeOptionalString(payload.email);
+    const nextEmail =
+      payload.email === undefined
+        ? undefined
+        : this.normalizeOptionalString(payload.email);
 
     if (nextEmail && nextEmail !== current.email) {
       const existedByEmail = await this.prisma.user.findUnique({
@@ -333,15 +345,30 @@ export class AdminAccountsService {
     await this.prisma.user.update({
       where: { id: accountId },
       data: {
-        fullName: payload.fullName !== undefined ? this.normalizeOptionalString(payload.fullName) : undefined,
+        fullName:
+          payload.fullName !== undefined
+            ? this.normalizeOptionalString(payload.fullName)
+            : undefined,
         gender: payload.gender,
         email: nextEmail,
-        avatarUrl: payload.avatarUrl !== undefined ? this.normalizeOptionalString(payload.avatarUrl) : undefined,
-        address: payload.address !== undefined ? this.normalizeOptionalString(payload.address) : undefined,
+        avatarUrl:
+          payload.avatarUrl !== undefined
+            ? this.normalizeOptionalString(payload.avatarUrl)
+            : undefined,
+        address:
+          payload.address !== undefined
+            ? this.normalizeOptionalString(payload.address)
+            : undefined,
         isVerified: payload.isVerified,
         isActive: payload.isActive,
-        latitude: payload.latitude !== undefined ? this.normalizeOptionalNumber(payload.latitude) : undefined,
-        longitude: payload.longitude !== undefined ? this.normalizeOptionalNumber(payload.longitude) : undefined,
+        latitude:
+          payload.latitude !== undefined
+            ? this.normalizeOptionalNumber(payload.latitude)
+            : undefined,
+        longitude:
+          payload.longitude !== undefined
+            ? this.normalizeOptionalNumber(payload.longitude)
+            : undefined,
       },
     });
 

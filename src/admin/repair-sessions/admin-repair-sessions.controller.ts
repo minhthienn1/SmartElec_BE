@@ -45,9 +45,8 @@ export class AdminRepairSessionsController {
   /** Gỡ kỹ thuật viên khỏi repair session và mở lại luồng điều phối. */
   @Post(':id/unassign')
   async unassignTechnician(@Param('id', ParseIntPipe) sessionId: number) {
-    const session = await this.adminRepairSessionsService.unassignTechnician(
-      sessionId,
-    );
+    const session =
+      await this.adminRepairSessionsService.unassignTechnician(sessionId);
 
     if (!session) {
       throw new NotFoundException('Không tìm thấy ca sửa chữa.');
@@ -59,9 +58,8 @@ export class AdminRepairSessionsController {
   /** Hủy repair session từ góc nhìn quản trị vận hành. */
   @Post(':id/cancel')
   async cancelRepairSession(@Param('id', ParseIntPipe) sessionId: number) {
-    const session = await this.adminRepairSessionsService.cancelRepairSession(
-      sessionId,
-    );
+    const session =
+      await this.adminRepairSessionsService.cancelRepairSession(sessionId);
 
     if (!session) {
       throw new NotFoundException('Không tìm thấy ca sửa chữa.');

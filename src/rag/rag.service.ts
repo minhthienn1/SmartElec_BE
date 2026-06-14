@@ -22,7 +22,9 @@ export class RagService {
    */
   private async generateEmbedding(text: string): Promise<number[]> {
     try {
-      const model = this.genAI.getGenerativeModel({ model: 'text-embedding-004' });
+      const model = this.genAI.getGenerativeModel({
+        model: 'text-embedding-004',
+      });
       const result = await model.embedContent(text);
       return result.embedding.values;
     } catch (error) {
