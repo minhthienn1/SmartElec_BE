@@ -14,6 +14,108 @@ type ChatListQuery = {
 export class AdminChatsService {
   constructor(private readonly prisma: PrismaService) {}
 
+  private async attachAiConversationFallback<
+    T extends {
+      id: number;
+      user: { id: number; fullName: string | null; avatarUrl: string | null; role: 'USER' | 'TECHNICIAN' | 'ADMIN' };
+      messages?: Array<{
+        id: number;
+        sessionId: number;
+        senderId: number | null;
+        type: 'TEXT' | 'IMAGE' | 'VIDEO' | 'QUOTE_CARD' | 'SYSTEM_LOG' | 'QUOTE_RESPONSE';
+        content: string;
+        metadata: Prisma.JsonValue | null;
+        isRead: boolean;
+        isDeleted: boolean;
+        createdAt: Date;
+        sender: { id: number; fullName: string | null; avatarUrl: string | null; role: 'USER' | 'TECHNICIAN' | 'ADMIN' } | null;
+      }>;
+    },
+  >(sessions: T[]): Promise<T[]> {
+    const missingMessageSessionIds = sessions
+      .filter((session) => !Array.isArray(session.messages) || session.messages.length === 0)
+      .map((session) => session.id);
+
+    if (missingMessageSessionIds.length === 0) {
+      return sessions;
+    }
+
+    const logs = await this.prisma.aiReasoningLog.findMany({
+      where: {
+        sessionId: { in: missingMessageSessionIds },
+      },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        id: true,
+        sessionId: true,
+        userMsg: true,
+        aiResponse: true,
+        createdAt: true,
+      },
+    });
+
+    const logsBySessionId = new Map<number, typeof logs>();
+
+    for (const log of logs) {
+      const items = logsBySessionId.get(log.sessionId ?? -1) ?? [];
+      items.push(log);
+      logsBySessionId.set(log.sessionId ?? -1, items);
+    }
+
+    return sessions.map((session) => {
+      if (Array.isArray(session.messages) && session.messages.length > 0) {
+        return session;
+      }
+
+      const sessionLogs = logsBySessionId.get(session.id) ?? [];
+      if (sessionLogs.length === 0) {
+        return session;
+      }
+
+      return {
+        ...session,
+        messages: sessionLogs.flatMap((log) => {
+          const syntheticMessages: NonNullable<T['messages']> = [];
+
+          if (log.userMsg?.trim()) {
+            syntheticMessages.push({
+              id: -(log.id * 2),
+              sessionId: session.id,
+              senderId: session.user.id,
+              type: 'TEXT',
+              content: log.userMsg,
+              metadata: null,
+              isRead: true,
+              isDeleted: false,
+              createdAt: log.createdAt,
+              sender: session.user,
+            });
+          }
+
+          if (log.aiResponse?.trim()) {
+            syntheticMessages.push({
+              id: -(log.id * 2 + 1),
+              sessionId: session.id,
+              senderId: null,
+              type: 'TEXT',
+              content: log.aiResponse,
+              metadata: {
+                source: 'ai_reasoning_logs',
+                logId: log.id,
+              },
+              isRead: true,
+              isDeleted: false,
+              createdAt: log.createdAt,
+              sender: null,
+            });
+          }
+
+          return syntheticMessages;
+        }),
+      };
+    });
+  }
+
   private buildWhere(query: ChatListQuery): Prisma.ChatSessionWhereInput {
     const where: Prisma.ChatSessionWhereInput = {};
     const and: Prisma.ChatSessionWhereInput[] = [];
@@ -325,6 +427,89 @@ export class AdminChatsService {
     return sessions.map((session) => this.mapSession(session));
   }
 
+  async getFullConversations(query: ChatListQuery) {
+    const sessions = await this.prisma.chatSession.findMany({
+      where: this.buildWhere(query),
+      orderBy: [{ updatedAt: 'desc' }],
+      select: {
+        id: true,
+        userId: true,
+        technicianId: true,
+        deviceId: true,
+        deviceType: true,
+        symptom: true,
+        aiSummary: true,
+        isDangerous: true,
+        status: true,
+        version: true,
+        contactName: true,
+        contactPhone: true,
+        address: true,
+        latitude: true,
+        longitude: true,
+        createdAt: true,
+        updatedAt: true,
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            avatarUrl: true,
+            role: true,
+          },
+        },
+        technician: {
+          select: {
+            id: true,
+            fullName: true,
+            avatarUrl: true,
+            role: true,
+          },
+        },
+        messages: {
+          where: { isDeleted: false },
+          orderBy: { createdAt: 'asc' },
+          select: {
+            id: true,
+            sessionId: true,
+            senderId: true,
+            type: true,
+            content: true,
+            metadata: true,
+            isRead: true,
+            isDeleted: true,
+            createdAt: true,
+            sender: {
+              select: {
+                id: true,
+                fullName: true,
+                avatarUrl: true,
+                role: true,
+              },
+            },
+          },
+        },
+        assignmentHistories: {
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            technicianId: true,
+            action: true,
+            createdAt: true,
+            technician: {
+              select: {
+                id: true,
+                fullName: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const sessionsWithMessages = await this.attachAiConversationFallback(sessions);
+    return sessionsWithMessages.map((session) => this.mapSession(session));
+  }
+
   async getChatById(sessionId: number) {
     const session = await this.prisma.chatSession.findUnique({
       where: { id: sessionId },
@@ -403,7 +588,12 @@ export class AdminChatsService {
       },
     });
 
-    return session ? this.mapSession(session) : null;
+    if (!session) {
+      return null;
+    }
+
+    const [sessionWithMessages] = await this.attachAiConversationFallback([session]);
+    return this.mapSession(sessionWithMessages);
   }
 
   /** Gán thợ cho một phiên chat từ giao diện admin và chuyển trạng thái sang MATCHED. */

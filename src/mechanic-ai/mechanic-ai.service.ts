@@ -16,9 +16,7 @@ export class MechanicAiService {
     const apiKey = this.configService.get<string>('GEMINI_API_KEY') || '';
     this.genAI = new GoogleGenerativeAI(apiKey);
     // 1. Khởi tạo Embedding Model (Google đã đổi tên model thành gemini-embedding-2)
-    this.embeddingModel = this.genAI.getGenerativeModel({
-      model: 'gemini-embedding-2',
-    });
+    this.embeddingModel = this.genAI.getGenerativeModel({ model: 'gemini-embedding-001' });
   }
 
   // 2. Viết hàm ingestDocument
@@ -30,10 +28,7 @@ export class MechanicAiService {
     accessLevel: 'BASIC' | 'ADVANCED' = 'ADVANCED',
   ) {
     if (!title || !content) {
-      throw new HttpException(
-        'Thiếu title hoặc content',
-        HttpStatus.BAD_REQUEST,
-      );
+      throw new HttpException('Thiếu title hoặc content', HttpStatus.BAD_REQUEST);
     }
 
     try {
@@ -71,9 +66,7 @@ export class MechanicAiService {
         )
       `;
 
-      this.logger.log(
-        `✅ Đã nạp thành công tài liệu: "${title}" (768d vector)`,
-      );
+      this.logger.log(`✅ Đã nạp thành công tài liệu: "${title}" (768d vector)`);
       return {
         message: 'Tài liệu đã được nạp và vector hóa thành công',
         data: { title, category, accessLevel },
@@ -124,10 +117,7 @@ export class MechanicAiService {
       };
     } catch (error) {
       this.logger.error('Lỗi khi search tài liệu RAG:', error);
-      throw new HttpException(
-        'Lỗi khi truy xuất tài liệu',
-        HttpStatus.INTERNAL_SERVER_ERROR,
-      );
+      throw new HttpException('Lỗi khi truy xuất tài liệu', HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
 }
