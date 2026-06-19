@@ -3,6 +3,12 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { v4 as uuidv4 } from 'uuid';
 import { extname } from 'path';
 
+type UploadedFileMetadata = {
+  url: string;
+  storageKey: string;
+  storedFileName: string;
+};
+
 @Injectable()
 export class UploadService {
   private readonly s3Client: S3Client;
@@ -61,6 +67,39 @@ export class UploadService {
   }
 
   // --- MỚI: DÀNH RIÊNG CHO CHAT (SỬ DỤNG UUID) ---
+  async uploadFileWithMetadata(
+    file: Express.Multer.File,
+    folder: string,
+    storedFileName = `${Date.now()}-${uuidv4()}${extname(file.originalname).toLowerCase()}`,
+  ): Promise<UploadedFileMetadata> {
+    const key = `${folder}/${storedFileName}`;
+
+    try {
+      await this.s3Client.send(
+        new PutObjectCommand({
+          Bucket: this.bucketName,
+          Key: key,
+          Body: file.buffer,
+          ContentType: file.mimetype,
+        }),
+      );
+
+      const publicFileUrl = `${this.publicUrl}/${key}`;
+
+      console.log(`â˜ï¸ [R2] Upload thÃ nh cÃ´ng: ${publicFileUrl}`);
+      return {
+        url: publicFileUrl,
+        storageKey: key,
+        storedFileName,
+      };
+    } catch (error : any) {
+      console.error(`âŒ [R2] Upload tháº¥t báº¡i:`, error.message);
+      throw new InternalServerErrorException(
+        'KhÃ´ng thá»ƒ upload file: ' + error.message,
+      );
+    }
+  }
+
   async uploadMediaToR2(file: Express.Multer.File): Promise<string> {
     try {
       const uniqueFileName = `chats/${uuidv4()}${extname(file.originalname)}`;

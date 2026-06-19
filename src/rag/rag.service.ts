@@ -4,7 +4,7 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common';
-import { Prisma, RagDocumentStatus } from '@prisma/client';
+import { Prisma, RagDocumentStatus, RagFileType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { IngestDocumentDto } from './dto/ingest-document.dto';
 import { RagEmbeddingService } from './rag-embedding.service';
@@ -12,14 +12,21 @@ import { RagEmbeddingService } from './rag-embedding.service';
 type DocumentListItem = {
   id: number;
   title: string;
+  description: string | null;
   content: string;
   category: string | null;
+  brand: string | null;
+  modelCode: string | null;
   source: string | null;
   accessLevel: string;
+  fileType: RagFileType;
+  originalFileName: string | null;
   createdAt: Date;
   updatedAt: Date;
+  indexedAt: Date | null;
   status: RagDocumentStatus;
   totalChunks: number;
+  totalCharacters: number;
 };
 
 @Injectable()
@@ -50,26 +57,40 @@ export class RagService {
   private mapDocumentForAdmin(document: {
     id: number;
     title: string;
+    description: string | null;
     source: string | null;
     category: string | null;
+    brand: string | null;
+    modelCode: string | null;
     accessLevel: string;
+    fileType: RagFileType;
+    originalFileName: string | null;
     createdAt: Date;
     updatedAt: Date;
+    indexedAt: Date | null;
     status: RagDocumentStatus;
     totalChunks: number;
+    totalCharacters: number;
     chunks: Array<{ content: string }>;
   }): DocumentListItem {
     return {
       id: document.id,
       title: document.title,
+      description: document.description,
       content: document.chunks[0]?.content || '',
       category: document.category,
+      brand: document.brand,
+      modelCode: document.modelCode,
       source: document.source,
       accessLevel: document.accessLevel,
+      fileType: document.fileType,
+      originalFileName: document.originalFileName,
       createdAt: document.createdAt,
       updatedAt: document.updatedAt,
+      indexedAt: document.indexedAt,
       status: document.status,
       totalChunks: document.totalChunks,
+      totalCharacters: document.totalCharacters,
     };
   }
 
