@@ -25,14 +25,14 @@ enum Gender {
 
 enum JobStatus {
   AI_CONSULTING // Đang chat với AI
-  BROADCASTING  // Đang phát sóng tìm thợ
-  MATCHED       // Thợ đã nhận ca, phòng chat mở
-  EN_ROUTE      // Thợ đang trên đường di chuyển đến nhà khách
-  ARRIVED       // Thợ đã đến nơi, đang kiểm tra
-  IN_PROGRESS   // Đã chốt báo giá, đang tiến hành sửa
-  COMPLETED     // Hoàn thành (thợ xác nhận)
-  DONE          // Alias cũ, giữ lại để tương thích
-  CANCELLED     // Bị hủy
+  BROADCASTING // Đang phát sóng tìm thợ
+  MATCHED // Thợ đã nhận ca, phòng chat mở
+  EN_ROUTE // Thợ đang trên đường di chuyển đến nhà khách
+  ARRIVED // Thợ đã đến nơi, đang kiểm tra
+  IN_PROGRESS // Đã chốt báo giá, đang tiến hành sửa
+  COMPLETED // Hoàn thành (thợ xác nhận)
+  DONE // Alias cũ, giữ lại để tương thích
+  CANCELLED // Bị hủy
 }
 
 enum MessageType {
@@ -53,10 +53,10 @@ enum QuoteStatus {
 }
 
 enum AssignmentAction {
-  ASSIGNED          // Thợ nhận đơn
-  UNASSIGNED        // Thợ hủy đơn
-  REJECTED          // Khách từ chối thợ
-  MANUAL_CANCEL     // Thợ chủ động hủy
+  ASSIGNED // Thợ nhận đơn
+  UNASSIGNED // Thợ hủy đơn
+  REJECTED // Khách từ chối thợ
+  MANUAL_CANCEL // Thợ chủ động hủy
   SYSTEM_AUTO_CANCEL // Hệ thống tự hủy sau 30 phút
 }
 
@@ -66,9 +66,42 @@ enum AssignmentAction {
 
 // Enum phân quyền truy cập tài liệu RAG
 enum AccessLevel {
-  BASIC    // Dành cho cả Khách hàng & Thợ (vệ sinh, kiểm tra phích cắm...)
+  BASIC // Dành cho cả Khách hàng & Thợ (vệ sinh, kiểm tra phích cắm...)
   ADVANCED // CHỈ dành cho Thợ có chuyên môn (tháo máy, sửa bo mạch...)
 }
+
+enum RagDocumentStatus {
+  UPLOADED
+  PARSING
+  CHUNKING
+  EMBEDDING
+  READY
+  FAILED
+  ARCHIVED
+}
+
+enum RagFileType {
+  PDF
+  DOCX
+  XLSX
+  XLS
+  CSV
+  TXT
+  MD
+  HTML
+  JSON
+  UNKNOWN
+}
+
+enum RagDocumentKind {
+  TROUBLESHOOTING_GUIDE
+  REPAIR_POLICY
+  PRICE_TABLE
+  DEVICE_MANUAL
+  FAQ
+  INTERNAL_NOTE
+}
+
 model User {
   id          Int     @id @default(autoincrement())
   phoneNumber String  @unique
@@ -81,9 +114,9 @@ model User {
   fcmToken    String?
 
   // Social Login IDs
-  zaloId        String?  @unique  // ID Zalo (duy nhất, dùng cho đăng nhập Zalo)
-  googleId      String?  @unique  // ID Google (duy nhất, dùng cho đăng nhập Google)
-  needsPassword Boolean  @default(false) // true khi user đăng ký qua Zalo/Google chưa đặt mật khẩu
+  zaloId        String? @unique // ID Zalo (duy nhất, dùng cho đăng nhập Zalo)
+  googleId      String? @unique // ID Google (duy nhất, dùng cho đăng nhập Google)
+  needsPassword Boolean @default(false) // true khi user đăng ký qua Zalo/Google chưa đặt mật khẩu
 
   role       UserRole @default(USER)
   isVerified Boolean  @default(false)
@@ -97,14 +130,15 @@ model User {
   updatedAt DateTime  @updatedAt
 
   // CÁC MỐI QUAN HỆ (RELATIONS)
-  devices             Device[]
-  chatSessions        ChatSession[]              @relation("CustomerSessions")
-  technicianSessions  ChatSession[]              @relation("TechnicianSessions")
-  sentMessages        Message[]                  @relation("SentMessages")
-  quotesCreated       Quote[]
-  assignmentHistories SessionAssignmentHistory[]
-  reviewsGiven        Review[]                   @relation("UserReviews")
-  reviewsReceived     Review[]                   @relation("TechnicianReviews")
+  devices              Device[]
+  chatSessions         ChatSession[]              @relation("CustomerSessions")
+  technicianSessions   ChatSession[]              @relation("TechnicianSessions")
+  sentMessages         Message[]                  @relation("SentMessages")
+  quotesCreated        Quote[]
+  assignmentHistories  SessionAssignmentHistory[]
+  reviewsGiven         Review[]                   @relation("UserReviews")
+  reviewsReceived      Review[]                   @relation("TechnicianReviews")
+  uploadedRagDocuments RagDocument[]
 
   // ĐIỂM ĐÁNH GIÁ (Cache để truy vấn nhanh)
   averageRating Float @default(0.0)
@@ -187,9 +221,9 @@ model ChatSession {
 model Review {
   id           Int      @id @default(autoincrement())
   sessionId    Int      @unique // 1 đơn chỉ có 1 Review
-  userId       Int      // Khách hàng đánh giá
-  technicianId Int      // Thợ được đánh giá
-  rating       Int      // Số sao (1-5)
+  userId       Int // Khách hàng đánh giá
+  technicianId Int // Thợ được đánh giá
+  rating       Int // Số sao (1-5)
   comment      String?  @db.Text
   tags         String[] // ["Đúng giờ", "Nhiệt tình", "Giá hợp lý"]
 
@@ -268,35 +302,177 @@ model SessionAssignmentHistory {
 }
 
 model AiReasoningLog {
-  id        Int      @id @default(autoincrement())
-  sessionId Int?
-  userId    Int
-  userMsg   String   @db.Text
-  prevState Json?
-  nextState Json?
-  riskLevel String?
-  aiResponse String? @db.Text
-  aiFeedback String? // "LIKE" | "DISLIKE" | null
-  score          Int     @default(0)
-  deviceCategory String? // Ví dụ: "Máy lạnh", "Tủ lạnh"
-  isGolden       Boolean @default(false) // Cờ đánh dấu câu trả lời xuất sắc nhất
-  createdAt DateTime @default(now())
+  id              Int                @id @default(autoincrement())
+  sessionId       Int?
+  userId          Int
+  userMsg         String             @db.Text
+  prevState       Json?
+  nextState       Json?
+  riskLevel       String?
+  aiResponse      String?            @db.Text
+  aiFeedback      String? // "LIKE" | "DISLIKE" | null
+  score           Int                @default(0)
+  deviceCategory  String? // Ví dụ: "Máy lạnh", "Tủ lạnh"
+  isGolden        Boolean            @default(false) // Cờ đánh dấu câu trả lời xuất sắc nhất
+  retrievedChunks AiRetrievedChunk[]
+  createdAt       DateTime           @default(now())
 
   @@map("ai_reasoning_logs")
 }
 
 // ======================================================================
-// 6. BẢNG TÀI LIỆU KỸ THUẬT (RAG — Retrieval-Augmented Generation)
+// 6. BẢNG RAG / AI KNOWLEDGE BASE
 // ======================================================================
-model TechnicalDocument {
-  id          Int         @id @default(autoincrement())
-  title       String      // Tên / Chủ đề tài liệu (vd: "Máy lạnh không mát - Kiểm tra gas")
-  content     String      @db.Text // Đoạn nội dung (chunk) đã được xử lý
-  category    String?     // Loại thiết bị liên quan (vd: "Máy lạnh", "Tủ lạnh")
-  source      String?     // Nguồn gốc tài liệu (vd: "Manual Daikin 2024", "Kỹ thuật viên nội bộ")
-  embedding Unsupported("vector(768)")?
-  // Phân quyền: BASIC = khách & thợ đều xem được; ADVANCED = chỉ thợ
+model RagDocument {
+  id          Int     @id @default(autoincrement())
+  title       String
+  description String? @db.Text
+
+  // File gốc admin upload
+  originalFileName String?
+  storedFileName   String?
+  fileUrl          String?
+  storageKey       String?
+  mimeType         String?
+  fileType         RagFileType @default(UNKNOWN)
+  fileSizeBytes    BigInt?
+  checksum         String?
+
+  // Phân loại nghiệp vụ
+  kind      RagDocumentKind?
+  category  String?
+  brand     String?
+  modelCode String?
+  source    String?
+  tags      String[]
+
+  // Quyền truy cập
   accessLevel AccessLevel @default(ADVANCED)
+
+  // Trạng thái xử lý file
+  status       RagDocumentStatus @default(UPLOADED)
+  errorMessage String?           @db.Text
+
+  // Thống kê sau khi import/index
+  totalChunks     Int @default(0)
+  totalCharacters Int @default(0)
+  totalTokens     Int @default(0)
+
+  // Version và trạng thái sử dụng
+  version  Int     @default(1)
+  isActive Boolean @default(true)
+
+  // Người upload
+  uploadedById Int?
+  uploadedBy   User? @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  // Quan hệ
+  chunks RagChunk[]
+
+  parsedAt  DateTime?
+  indexedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([status])
+  @@index([category])
+  @@index([brand])
+  @@index([kind])
+  @@index([accessLevel])
+  @@index([isActive])
+  @@index([uploadedById])
+  @@index([checksum])
+  @@map("rag_documents")
+}
+
+model RagChunk {
+  id Int @id @default(autoincrement())
+
+  documentId Int
+  document   RagDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  // Thứ tự chunk trong tài liệu
+  chunkIndex Int
+
+  // Nội dung chunk
+  title   String?
+  section String?
+  content String  @db.Text
+
+  // Vị trí trong file gốc
+  pageNumber Int?
+  sheetName  String?
+  rowIndex   Int?
+
+  // Metadata linh hoạt cho PDF/DOCX/XLSX/CSV
+  metadata Json?
+
+  // Lặp lại vài field để filter nhanh khi vector search
+  category    String?
+  brand       String?
+  modelCode   String?
+  tags        String[]
+  accessLevel AccessLevel @default(ADVANCED)
+
+  tokenCount Int?
+  charCount  Int?
+
+  // Vector embedding của chunk
+  // Chiều 768 dùng cho Google text-embedding-004 / embedding model tương thích 768 dimensions
+  embedding Unsupported("vector(768)")?
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  retrievedByLogs AiRetrievedChunk[]
+
+  @@unique([documentId, chunkIndex])
+  @@index([documentId])
+  @@index([category])
+  @@index([brand])
+  @@index([accessLevel])
+  @@index([isActive])
+  @@map("rag_chunks")
+}
+
+model AiRetrievedChunk {
+  id Int @id @default(autoincrement())
+
+  logId   Int
+  chunkId Int
+
+  // Điểm giống nhau khi vector search
+  score Float?
+
+  // Thứ hạng trong top kết quả truy xuất
+  rank Int?
+
+  log   AiReasoningLog @relation(fields: [logId], references: [id], onDelete: Cascade)
+  chunk RagChunk       @relation(fields: [chunkId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([logId, chunkId])
+  @@index([logId])
+  @@index([chunkId])
+  @@map("ai_retrieved_chunks")
+}
+
+// Legacy/deprecated: model này đang được code `src/rag` hiện tại sử dụng cho CRUD chunk thủ công.
+// Flow import file RAG mới phải dùng `RagDocument` + `RagChunk`.
+// Nếu hệ thống chưa có dữ liệu production và đã migrate code ứng dụng sang schema mới,
+// có thể xóa model này ở migration tiếp theo rồi chuyển dữ liệu cũ sang `rag_documents` / `rag_chunks`.
+model TechnicalDocument {
+  id          Int                         @id @default(autoincrement())
+  title       String // Tên / Chủ đề tài liệu (vd: "Máy lạnh không mát - Kiểm tra gas")
+  content     String                      @db.Text // Đoạn nội dung (chunk) đã được xử lý
+  category    String? // Loại thiết bị liên quan (vd: "Máy lạnh", "Tủ lạnh")
+  source      String? // Nguồn gốc tài liệu (vd: "Manual Daikin 2024", "Kỹ thuật viên nội bộ")
+  embedding   Unsupported("vector(768)")?
+  // Phân quyền: BASIC = khách & thợ đều xem được; ADVANCED = chỉ thợ
+  accessLevel AccessLevel                 @default(ADVANCED)
 
   // Vector embedding — dùng pgvector extension (đã bật trên Neon)
   // Chiều 768 tương thích với mô hình text-embedding-004 của Google
