@@ -32,6 +32,30 @@ export class MailService {
     }
   }
 
+  async sendEmailVerificationOtp(email: string, otp: string): Promise<void> {
+    const transporter = this.getTransporter();
+    const from = this.configService.get<string>('SMTP_FROM');
+
+    if (!from) {
+      throw new InternalServerErrorException('SMTP_FROM chưa được cấu hình.');
+    }
+
+    try {
+      await transporter.sendMail({
+        from,
+        to: email,
+        subject: 'SmartElec - Mã OTP xác minh tài khoản',
+        text: `Mã OTP xác minh tài khoản của bạn là ${otp}. Mã có hiệu lực trong 5 phút.`,
+        html: `<p>Xin chào,</p><p>Mã OTP xác minh tài khoản của bạn là <strong>${otp}</strong>.</p><p>Mã có hiệu lực trong 5 phút.</p>`,
+      });
+    } catch (error) {
+      console.error('Failed to send account-verification OTP email', error);
+      throw new InternalServerErrorException(
+        'Không thể gửi email xác minh lúc này.',
+      );
+    }
+  }
+
   private getTransporter(): Transporter {
     if (this.transporter) {
       return this.transporter;

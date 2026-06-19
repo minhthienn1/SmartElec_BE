@@ -10,6 +10,7 @@ import { SetPasswordDto } from './dto/set-password.dto';
 import { RequestResetOtpDto } from './dto/request-reset-otp.dto';
 import { VerifyResetOtpDto } from './dto/verify-reset-otp.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { VerifyEmailOtpDto } from './dto/verify-email-otp.dto';
 
 @Controller('auth') // Đường dẫn gốc là /auth
 export class AuthController {
@@ -71,5 +72,27 @@ export class AuthController {
   @Post('forgot-password/reset')
   async resetPassword(@Body() resetPasswordDto: ResetPasswordDto) {
     return this.authService.resetPassword(resetPasswordDto);
+  }
+
+  @Post('email-verification/request-otp')
+  @UseGuards(JwtAuthGuard)
+  async requestEmailVerificationOtp(
+    @Req() req: Request & { user: { userId: number } },
+  ) {
+    return this.authService.requestEmailVerificationOtp(
+      this.getRequestUserId(req),
+    );
+  }
+
+  @Post('email-verification/verify-otp')
+  @UseGuards(JwtAuthGuard)
+  async verifyEmailOtp(
+    @Req() req: Request & { user: { userId: number } },
+    @Body() verifyEmailOtpDto: VerifyEmailOtpDto,
+  ) {
+    return this.authService.verifyEmailOtp(
+      this.getRequestUserId(req),
+      verifyEmailOtpDto,
+    );
   }
 }

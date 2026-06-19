@@ -26,6 +26,7 @@ describe('AuthService forgot-password flow', () => {
 
   const mailService = {
     sendPasswordResetOtp: jest.fn(),
+    sendEmailVerificationOtp: jest.fn(),
   };
 
   type UpdatePasswordCall = {
@@ -65,6 +66,42 @@ describe('AuthService forgot-password flow', () => {
     );
   });
 
+  it('rejects login when the account is locked', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: 7,
+      phoneNumber: '0123456789',
+      password: await require('bcrypt').hash('secret123', 10),
+      role: 'USER',
+      needsPassword: false,
+      isActive: false,
+    });
+
+    await expect(service.login('0123456789', 'secret123')).rejects.toMatchObject({
+      message: 'Tài khoản đã bị khóa.',
+    });
+  });
+
+  it('allows login when the account is active', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: 7,
+      phoneNumber: '0123456789',
+      password: await require('bcrypt').hash('secret123', 10),
+      role: 'USER',
+      needsPassword: false,
+      isActive: true,
+    });
+    jwtService.signAsync.mockResolvedValue('signed-token');
+    prisma.user.update.mockResolvedValue({ id: 7 });
+
+    const result = await service.login('0123456789', 'secret123');
+
+    expect(result.access_token).toBe('signed-token');
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: 7 },
+      data: { lastLogin: expect.any(Date) },
+    });
+  });
+
   it('throws when requesting an OTP for a missing email', async () => {
     prisma.user.findUnique.mockResolvedValue(null);
 
@@ -86,6 +123,50 @@ describe('AuthService forgot-password flow', () => {
 
     expect(result.verified).toBe(true);
     expect(result.message).toEqual(expect.any(String));
+  });
+
+  it('stores and emails an account-verification OTP for an unverified user', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: 9,
+      email: 'verify@example.com',
+      isVerified: false,
+    });
+
+    await service.requestEmailVerificationOtp(9);
+
+    expect(otpStore.save).toHaveBeenCalledWith(
+      'email-verification:9:verify@example.com',
+      expect.stringMatching(/^\d{6}$/),
+      expect.any(Number),
+    );
+    expect(mailService.sendEmailVerificationOtp).toHaveBeenCalledWith(
+      'verify@example.com',
+      expect.stringMatching(/^\d{6}$/),
+    );
+  });
+
+  it('marks the account as verified after a valid verification OTP', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: 9,
+      email: 'verify@example.com',
+      isVerified: false,
+    });
+    otpStore.get.mockResolvedValue({
+      otp: '123456',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    prisma.user.update.mockResolvedValue({ id: 9, isVerified: true });
+
+    const result = await service.verifyEmailOtp(9, { otp: '123456' });
+
+    expect(result.verified).toBe(true);
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: 9 },
+      data: { isVerified: true },
+    });
+    expect(otpStore.delete).toHaveBeenCalledWith(
+      'email-verification:9:verify@example.com',
+    );
   });
 
   it('rejects an invalid OTP', async () => {

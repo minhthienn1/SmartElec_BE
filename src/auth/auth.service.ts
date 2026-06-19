@@ -16,6 +16,7 @@ import * as admin from 'firebase-admin';
 import { RequestResetOtpDto } from './dto/request-reset-otp.dto';
 import { VerifyResetOtpDto } from './dto/verify-reset-otp.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { VerifyEmailOtpDto } from './dto/verify-email-otp.dto';
 import { ForgotPasswordOtpStore } from './forgot-password-otp.store';
 import { MailService } from './mail.service';
 
@@ -28,7 +29,17 @@ export class AuthService {
     private readonly mailService: MailService,
   ) {}
 
+  private assertAccountIsActive(user: { isActive: boolean }) {
+    if (!user.isActive) {
+      throw new UnauthorizedException('Tài khoản đã bị khóa.');
+    }
+  }
+
   // 1. Chức năng Đăng ký (Cập nhật để nhận RegisterDto)
+  private getEmailVerificationOtpKey(userId: number, email: string) {
+    return `email-verification:${userId}:${email}`;
+  }
+
   async register(dto: RegisterDto) {
     const {
       email,
@@ -96,12 +107,16 @@ export class AuthService {
       throw new UnauthorizedException('Thông tin đăng nhập không chính xác');
     }
 
+    this.assertAccountIsActive(user);
+
     const payload = {
       sub: user.id,
       role: user.role,
     };
 
     // Cập nhật lastLogin khi đăng nhập thành công
+    this.assertAccountIsActive(user);
+
     await this.prisma.user.update({
       where: { id: user.id },
       data: { lastLogin: new Date() },
@@ -186,6 +201,8 @@ export class AuthService {
       where: { id: user.id },
       data: { lastLogin: new Date() },
     });
+
+    this.assertAccountIsActive(user);
 
     const payload = {
       sub: user.id,
@@ -359,6 +376,8 @@ export class AuthService {
       data: { lastLogin: new Date() },
     });
 
+    this.assertAccountIsActive(user);
+
     const payload = {
       sub: user.id,
       role: user.role,
@@ -433,6 +452,84 @@ export class AuthService {
 
     return {
       message: 'Đặt lại mật khẩu thành công.',
+    };
+  }
+
+  async requestEmailVerificationOtp(userId: number) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        isVerified: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Người dùng không tồn tại.');
+    }
+
+    if (!user.email) {
+      throw new ConflictException(
+        'Tài khoản chưa có email để thực hiện xác minh.',
+      );
+    }
+
+    if (user.isVerified) {
+      throw new ConflictException('Tài khoản đã được xác minh.');
+    }
+
+    const otp = this.generateOtp();
+    const ttlMs = Number(
+      process.env.EMAIL_VERIFICATION_OTP_TTL_MS ?? 5 * 60 * 1000,
+    );
+    const otpKey = this.getEmailVerificationOtpKey(user.id, user.email);
+
+    await this.forgotPasswordOtpStore.save(otpKey, otp, ttlMs);
+    await this.mailService.sendEmailVerificationOtp(user.email, otp);
+
+    return {
+      message: 'Đã gửi mã OTP xác minh về email của bạn.',
+    };
+  }
+
+  async verifyEmailOtp(userId: number, dto: VerifyEmailOtpDto) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        isVerified: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Người dùng không tồn tại.');
+    }
+
+    if (!user.email) {
+      throw new ConflictException(
+        'Tài khoản chưa có email để thực hiện xác minh.',
+      );
+    }
+
+    if (user.isVerified) {
+      throw new ConflictException('Tài khoản đã được xác minh.');
+    }
+
+    const otpKey = this.getEmailVerificationOtpKey(user.id, user.email);
+    await this.assertValidForgotPasswordOtp(otpKey, dto.otp);
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { isVerified: true },
+    });
+
+    await this.forgotPasswordOtpStore.delete(otpKey);
+
+    return {
+      message: 'Xác minh tài khoản thành công.',
+      verified: true,
     };
   }
 

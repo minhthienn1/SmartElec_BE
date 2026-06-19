@@ -8,6 +8,8 @@ import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateAdminAccountDto } from './dto/create-admin-account.dto';
 import { UpdateAdminAccountDto } from './dto/update-admin-account.dto';
+import { ForgotPasswordOtpStore } from '../../auth/forgot-password-otp.store';
+import { MailService } from '../../auth/mail.service';
 
 type AccountListQuery = {
   keyword?: string;
@@ -20,9 +22,17 @@ type AccountListQuery = {
 
 @Injectable()
 export class AdminAccountsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly otpStore: ForgotPasswordOtpStore,
+    private readonly mailService: MailService,
+  ) {}
 
   private readonly saltRounds = 10;
+
+  private getVerificationOtpKey(accountId: number, email: string) {
+    return `admin-account-verify:${accountId}:${email}`;
+  }
 
   private buildWhere(query: AccountListQuery): Prisma.UserWhereInput {
     const where: Prisma.UserWhereInput = {};
@@ -387,6 +397,80 @@ export class AdminAccountsService {
 
   /** Đánh dấu tài khoản đã được xác minh thủ công từ phía admin. */
   verifyAccount(accountId: number) {
+    return this.updateAccountFlags(accountId, { isVerified: true });
+  }
+
+  async requestAccountVerificationOtp(accountId: number) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: accountId },
+      select: {
+        id: true,
+        email: true,
+        isVerified: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Không tìm thấy tài khoản.');
+    }
+
+    if (!user.email) {
+      throw new ConflictException(
+        'Tài khoản chưa có email để thực hiện xác minh.',
+      );
+    }
+
+    if (user.isVerified) {
+      throw new ConflictException('Tài khoản đã được xác minh.');
+    }
+
+    const otp = `${Math.floor(100000 + Math.random() * 900000)}`;
+    const ttlMs = Number(
+      process.env.EMAIL_VERIFICATION_OTP_TTL_MS ?? 5 * 60 * 1000,
+    );
+    const otpKey = this.getVerificationOtpKey(user.id, user.email);
+
+    await this.otpStore.save(otpKey, otp, ttlMs);
+    await this.mailService.sendEmailVerificationOtp(user.email, otp);
+
+    return {
+      message: 'Đã gửi mã OTP xác minh tới email của tài khoản.',
+    };
+  }
+
+  async verifyAccountWithOtp(accountId: number, otp: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: accountId },
+      select: {
+        id: true,
+        email: true,
+        isVerified: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Không tìm thấy tài khoản.');
+    }
+
+    if (!user.email) {
+      throw new ConflictException(
+        'Tài khoản chưa có email để thực hiện xác minh.',
+      );
+    }
+
+    if (user.isVerified) {
+      throw new ConflictException('Tài khoản đã được xác minh.');
+    }
+
+    const otpKey = this.getVerificationOtpKey(user.id, user.email);
+    const record = await this.otpStore.get(otpKey);
+
+    if (!record || record.otp !== otp) {
+      throw new ConflictException('OTP xác minh không hợp lệ hoặc đã hết hạn.');
+    }
+
+    await this.otpStore.delete(otpKey);
+
     return this.updateAccountFlags(accountId, { isVerified: true });
   }
 
