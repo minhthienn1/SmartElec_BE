@@ -52,8 +52,7 @@ GIAI ĐOẠN 2 — CHẨN ĐOÁN (phase=DIAGNOSING)
 🟢 MỨC XANH: Lỗi vận hành thuần túy (không lạnh, không vắt đồ, ồn).
 
 --- 2B. FORMAT OUTPUT ---
-- Trường "text": Phản hồi chat tự nhiên với khách, tóm tắt -> nguyên nhân -> hướng dẫn.
-- Trường "technical_summary": BẮT BUỘC tóm tắt lại sự cố chuyên môn cực kỳ ngắn gọn (Tối đa 3 câu). Chỉ gạch đầu dòng Nguyên nhân và Cách xử lý. TUYỆT ĐỐI KHÔNG dùng từ ngữ xưng hô giao tiếp.
+- Tóm tắt -> Nguyên nhân -> Hướng dẫn an toàn -> Kết luận. Dùng Markdown nhấn mạnh.
 
 ══════════════════════════════════════════
 QUY TẮC ĐẶT THỢ CHỐNG ẢO GIÁC (BẮT BUỘC)
@@ -74,10 +73,6 @@ const responseSchema: any = {
     text: {
       type: SchemaType.STRING,
       description: 'Lời phản hồi cho khách hàng, có thể dùng Markdown',
-    },
-    technical_summary: {
-      type: SchemaType.STRING,
-      description: 'Tóm tắt bệnh án chuyên môn ngắn gọn (Nguyên nhân & Cách xử lý). Cực kỳ súc tích. Tuyệt đối KHÔNG có lời chào hỏi giao tiếp (Dạ, Vâng, Cháu, Bác...). Dùng để lưu vào database.',
     },
     state: {
       type: SchemaType.OBJECT,
@@ -369,7 +364,7 @@ ${negativeText || '   (Chưa có)'}
         const device = parsed.state?.device || (prevState as any)?.device || 'thiết bị';
         const symptom = parsed.state?.symptom || (prevState as any)?.symptom || 'sự cố';
         
-       sessionId = await this.saveRepairCase(userId, device, symptom, parsed.technical_summary || parsed.text || 'Booking via AI', sessionId);
+       sessionId = await this.saveRepairCase(userId, device, symptom, parsed.text || 'Booking via AI', sessionId);
 
         return {
           ...parsed,
@@ -391,7 +386,7 @@ ${negativeText || '   (Chưa có)'}
           userId,
           parsed.state.device,
           parsed.state.symptom,
-          parsed.technical_summary || parsed.text,
+          parsed.text,
           sessionId,
         );
       }

@@ -8,193 +8,13 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
-model User {
-  id                  Int                        @id @default(autoincrement())
-  phoneNumber         String                     @unique
-  password            String
-  fullName            String?
-  email               String?                    @unique
-  avatarUrl           String?
-  address             String?
-  role                UserRole                   @default(USER)
-  isVerified          Boolean                    @default(false)
-  isActive            Boolean                    @default(true)
-  lastLogin           DateTime?
-  createdAt           DateTime                   @default(now())
-  updatedAt           DateTime                   @updatedAt
-  gender              Gender
-  averageRating       Float                      @default(0.0)
-  fcmToken            String?
-  isOnline            Boolean                    @default(false)
-  latitude            Float?
-  longitude           Float?
-  totalReviews        Int                        @default(0)
-  googleId            String?                    @unique
-  needsPassword       Boolean                    @default(false)
-  zaloId              String?                    @unique
-  technicianSessions  ChatSession[]              @relation("TechnicianSessions")
-  chatSessions        ChatSession[]              @relation("CustomerSessions")
-  devices             Device[]
-  sentMessages        Message[]                  @relation("SentMessages")
-  quotesCreated       Quote[]
-  reviewsReceived     Review[]                   @relation("TechnicianReviews")
-  reviewsGiven        Review[]                   @relation("UserReviews")
-  assignmentHistories SessionAssignmentHistory[]
-
-  @@map("users")
-}
-
-model Device {
-  id                     Int           @id @default(autoincrement())
-  category               String
-  brandName              String
-  modelCode              String?
-  location               String?
-  purchaseDate           DateTime?
-  warrantyMonths         Int?
-  maintenanceCycleMonths Int?
-  nextMaintenanceDate    DateTime?
-  userId                 Int
-  createdAt              DateTime      @default(now())
-  updatedAt              DateTime      @updatedAt
-  chatSessions           ChatSession[]
-  user                   User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("devices")
-}
-
-model ChatSession {
-  id                  Int                        @id @default(autoincrement())
-  deviceType          String?
-  symptom             String?
-  aiSummary           String?
-  isDangerous         Boolean                    @default(false)
-  userId              Int
-  createdAt           DateTime                   @default(now())
-  updatedAt           DateTime                   @updatedAt
-  deviceId            Int?
-  status              JobStatus                  @default(AI_CONSULTING)
-  technicianId        Int?
-  version             Int                        @default(1)
-  address             String?
-  contactName         String?
-  contactPhone        String?
-  latitude            Float?
-  longitude           Float?
-  isHiddenByCustomer  Boolean                    @default(false)
-  sessionType         SessionType                @default(AI_DIAGNOSIS)
-  device              Device?                    @relation(fields: [deviceId], references: [id])
-  technician          User?                      @relation("TechnicianSessions", fields: [technicianId], references: [id])
-  user                User                       @relation("CustomerSessions", fields: [userId], references: [id], onDelete: Cascade)
-  messages            Message[]
-  quotes              Quote[]
-  review              Review?
-  assignmentHistories SessionAssignmentHistory[]
-
-  @@map("chat_sessions")
-}
-
-model Review {
-  id           Int         @id @default(autoincrement())
-  sessionId    Int         @unique
-  userId       Int
-  technicianId Int
-  rating       Int
-  comment      String?
-  tags         String[]
-  createdAt    DateTime    @default(now())
-  session      ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  technician   User        @relation("TechnicianReviews", fields: [technicianId], references: [id])
-  user         User        @relation("UserReviews", fields: [userId], references: [id])
-
-  @@map("reviews")
-}
-
-model Message {
-  id        Int         @id @default(autoincrement())
-  sessionId Int
-  senderId  Int?
-  type      MessageType @default(TEXT)
-  content   String
-  metadata  Json?
-  isRead    Boolean     @default(false)
-  isDeleted Boolean     @default(false)
-  deletedAt DateTime?
-  createdAt DateTime    @default(now())
-  sender    User?       @relation("SentMessages", fields: [senderId], references: [id])
-  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-
-  @@map("messages")
-}
-
-model Quote {
-  id            Int         @id @default(autoincrement())
-  sessionId     Int
-  technicianId  Int
-  title         String
-  amount        Float
-  status        QuoteStatus @default(PENDING)
-  version       Int         @default(1)
-  parentQuoteId Int?
-  acceptedAt    DateTime?
-  rejectedAt    DateTime?
-  cancelledAt   DateTime?
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
-  session       ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  technician    User        @relation(fields: [technicianId], references: [id], onDelete: Cascade)
-
-  @@map("quotes")
-}
-
-model SessionAssignmentHistory {
-  id            Int              @id @default(autoincrement())
-  chatSessionId Int
-  technicianId  Int
-  action        AssignmentAction
-  createdAt     DateTime         @default(now())
-  chatSession   ChatSession      @relation(fields: [chatSessionId], references: [id], onDelete: Cascade)
-  technician    User             @relation(fields: [technicianId], references: [id], onDelete: Cascade)
-
-  @@map("session_assignment_history")
-}
-
-model AiReasoningLog {
-  id             Int      @id @default(autoincrement())
-  sessionId      Int?
-  userId         Int
-  userMsg        String
-  prevState      Json?
-  nextState      Json?
-  riskLevel      String?
-  aiResponse     String?
-  aiFeedback     String?
-  score          Int      @default(0)
-  deviceCategory String?
-  isGolden       Boolean  @default(false)
-  createdAt      DateTime @default(now())
-
-  @@map("ai_reasoning_logs")
-}
-
-model TechnicalDocument {
-  id          Int                    @id @default(autoincrement())
-  title       String
-  content     String
-  category    String?
-  source      String?
-  accessLevel AccessLevel            @default(ADVANCED)
-  createdAt   DateTime               @default(now())
-  updatedAt   DateTime               @updatedAt
-  embedding   Unsupported("vector")?
-
-  @@map("technical_documents")
-}
-
+// ======================================================================
+// 1. ENUMS (DANH MỤC TRẠNG THÁI)
+// ======================================================================
 enum UserRole {
-  USER
-  TECHNICIAN
-  ADMIN
+  USER // Khách hàng
+  TECHNICIAN // Thợ sửa chữa
+  ADMIN // Quản trị viên
 }
 
 enum Gender {
@@ -218,18 +38,18 @@ enum JobStatus {
 enum MessageType {
   TEXT
   IMAGE
-  VIDEO
-  QUOTE_CARD
-  SYSTEM_LOG
+  VIDEO // Video gửi trong chat
+  QUOTE_CARD // Thẻ báo giá
+  SYSTEM_LOG // Tin nhắn hệ thống
   QUOTE_RESPONSE
 }
 
 enum QuoteStatus {
-  PENDING
-  ACCEPTED
-  REJECTED
-  SUPERSEDED
-  CANCELLED
+  PENDING // Chờ khách duyệt
+  ACCEPTED // Khách đồng ý
+  REJECTED // Khách từ chối
+  SUPERSEDED // Bị thay thế bởi báo giá mới
+  CANCELLED // Thợ tự hủy
 }
 
 enum AssignmentAction {
@@ -240,6 +60,11 @@ enum AssignmentAction {
   SYSTEM_AUTO_CANCEL // Hệ thống tự hủy sau 30 phút
 }
 
+// ======================================================================
+// 2. BẢNG NGƯỜI DÙNG & THIẾT BỊ
+// ======================================================================
+
+// Enum phân quyền truy cập tài liệu RAG
 enum AccessLevel {
   BASIC // Dành cho cả Khách hàng & Thợ (vệ sinh, kiểm tra phích cắm...)
   ADVANCED // CHỈ dành cho Thợ có chuyên môn (tháo máy, sửa bo mạch...)
