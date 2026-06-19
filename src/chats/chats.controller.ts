@@ -39,11 +39,18 @@ export class ChatsController {
   // GET /chats
   // Lấy danh sách các phiên chat của user đang đăng nhập (Hộp thư)
   // ─────────────────────────────────────────────────────────────────
-  @Get()
+@Get()
   @UseGuards(JwtAuthGuard)
   async getUserSessions(@Req() req) {
-    const userId = req.user.userId;
+    const userId = Number(req.user.id || req.user.userId || req.user.sub); 
     return this.chatsService.getUserSessions(userId);
+  }
+
+  @Get('active/running')
+  @UseGuards(JwtAuthGuard)
+  async getActiveSessions(@Req() req) {
+    const userId = Number(req.user.id || req.user.userId || req.user.sub);
+    return this.chatsService.getActiveSessions(userId);
   }
 
   // ─────────────────────────────────────────────────────────────────
