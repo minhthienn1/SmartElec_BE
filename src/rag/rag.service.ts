@@ -1,91 +1,141 @@
-import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
+import {
+  HttpException,
+  HttpStatus,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
+import { Prisma, RagDocumentStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { ConfigService } from '@nestjs/config';
-import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import { IngestDocumentDto } from './dto/ingest-document.dto';
+import { RagEmbeddingService } from './rag-embedding.service';
+
+type DocumentListItem = {
+  id: number;
+  title: string;
+  content: string;
+  category: string | null;
+  source: string | null;
+  accessLevel: string;
+  createdAt: Date;
+  updatedAt: Date;
+  status: RagDocumentStatus;
+  totalChunks: number;
+};
 
 @Injectable()
 export class RagService {
   private readonly logger = new Logger(RagService.name);
-  private genAI: GoogleGenerativeAI;
-  private embeddingModel: GenerativeModel;
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly configService: ConfigService,
+    private readonly ragEmbeddingService: RagEmbeddingService,
+  ) {}
+
+  private buildEmbeddingText(title: string, content: string) {
+    return `Tiêu đề: ${title}\nNội dung: ${content}`;
+  }
+
+  private async updateChunkEmbedding(
+    tx: Prisma.TransactionClient,
+    chunkId: number,
+    embedding: string,
   ) {
-    const apiKey = this.configService.get<string>('GEMINI_API_KEY') || '';
-    this.genAI = new GoogleGenerativeAI(apiKey);
-    this.embeddingModel = this.genAI.getGenerativeModel({
-      model: 'gemini-embedding-001',
-    });
+    await tx.$executeRaw`
+      UPDATE "rag_chunks"
+      SET "embedding" = CAST(${embedding} AS vector), "updatedAt" = now()
+      WHERE "id" = ${chunkId}
+    `;
   }
 
-  /**
-   * Tạo vector embedding từ văn bản sử dụng mô hình text-embedding-004
-   */
-  private async generateEmbedding(text: string): Promise<number[]> {
-    try {
-      const result = await this.embeddingModel.embedContent({
-        content: { parts: [{ text }], role: 'user' },
-        // @ts-ignore SDK cũ có thể chưa khai báo field này nhưng API vẫn hỗ trợ.
-        outputDimensionality: 768,
-      });
-      return result.embedding.values;
-    } catch (error) {
-      this.logger.error('Lỗi khi tạo embedding từ Gemini:', error);
-      throw new HttpException(
-        'Không thể tạo embedding cho tài liệu',
-        HttpStatus.INTERNAL_SERVER_ERROR,
-      );
-    }
+  private mapDocumentForAdmin(document: {
+    id: number;
+    title: string;
+    source: string | null;
+    category: string | null;
+    accessLevel: string;
+    createdAt: Date;
+    updatedAt: Date;
+    status: RagDocumentStatus;
+    totalChunks: number;
+    chunks: Array<{ content: string }>;
+  }): DocumentListItem {
+    return {
+      id: document.id,
+      title: document.title,
+      content: document.chunks[0]?.content || '',
+      category: document.category,
+      source: document.source,
+      accessLevel: document.accessLevel,
+      createdAt: document.createdAt,
+      updatedAt: document.updatedAt,
+      status: document.status,
+      totalChunks: document.totalChunks,
+    };
   }
 
-  /**
-   * Ingest (Nạp) một tài liệu mới vào cơ sở dữ liệu
-   */
   async ingestDocument(dto: IngestDocumentDto) {
     const { title, content, category, source, accessLevel = 'ADVANCED' } = dto;
-
-    // 1. Tạo embedding từ nội dung
-    // Để tối ưu, ta có thể embed cả title + content
-    const textToEmbed = `Tiêu đề: ${title}\nNội dung: ${content}`;
-    const embeddingValues = await this.generateEmbedding(textToEmbed);
-
-    // 2. Format embedding thành chuỗi vector cho pgvector: "[0.1, 0.2, ...]"
-    const embeddingString = `[${embeddingValues.join(',')}]`;
+    const textToEmbed = this.buildEmbeddingText(title, content);
+    const embeddingValues =
+      await this.ragEmbeddingService.generateEmbedding(textToEmbed);
+    const embeddingString =
+      this.ragEmbeddingService.toPgVector(embeddingValues);
+    const totalCharacters = content.length;
 
     try {
-      // 3. Lưu vào DB bằng Raw Query (do Prisma chưa support native type Unsupported("vector"))
-      // Chú ý: Cần xử lý cẩn thận SQL Injection nếu biến không được pass qua param
-      await this.prisma.$executeRaw`
-        INSERT INTO "technical_documents" (
-          "title", 
-          "content", 
-          "category", 
-          "source", 
-          "accessLevel", 
-          "embedding", 
-          "updatedAt"
-        )
-        VALUES (
-          ${title}, 
-          ${content}, 
-          ${category || null}, 
-          ${source || null}, 
-          CAST(${accessLevel} AS "AccessLevel"), 
-          CAST(${embeddingString} AS vector), 
-          now()
-        )
-      `;
+      const document = await this.prisma.$transaction(async (tx) => {
+        const createdDocument = await tx.ragDocument.create({
+          data: {
+            title,
+            category: category || null,
+            source: source || null,
+            accessLevel,
+            tags: [],
+            status: RagDocumentStatus.EMBEDDING,
+            totalCharacters,
+          },
+        });
 
-      this.logger.log(`✅ Đã nạp thành công tài liệu: "${title}"`);
+        const createdChunk = await tx.ragChunk.create({
+          data: {
+            documentId: createdDocument.id,
+            chunkIndex: 0,
+            title,
+            content,
+            category: category || null,
+            accessLevel,
+            tags: [],
+            charCount: totalCharacters,
+          },
+        });
+
+        await this.updateChunkEmbedding(tx, createdChunk.id, embeddingString);
+
+        return tx.ragDocument.update({
+          where: { id: createdDocument.id },
+          data: {
+            status: RagDocumentStatus.READY,
+            totalChunks: 1,
+            totalCharacters,
+            indexedAt: new Date(),
+          },
+          include: {
+            chunks: {
+              orderBy: { chunkIndex: 'asc' },
+              take: 1,
+              select: { content: true },
+            },
+          },
+        });
+      });
+
+      this.logger.log(`Da nap thanh cong tai lieu RAG moi: "${title}"`);
       return {
         message: 'Tài liệu đã được nạp và vector hóa thành công',
-        document: { title, category, accessLevel },
+        document: this.mapDocumentForAdmin(document),
       };
     } catch (error) {
-      this.logger.error('Lỗi khi lưu tài liệu vào database:', error);
+      this.logger.error('Lỗi khi lưu tài liệu RAG mới vào database:', error);
       throw new HttpException(
         'Không thể lưu tài liệu vào database',
         HttpStatus.INTERNAL_SERVER_ERROR,
@@ -93,23 +143,23 @@ export class RagService {
     }
   }
 
-  /**
-   * Lấy danh sách tài liệu (không kèm vector để nhẹ payload)
-   */
-  /** Lấy danh sách tài liệu đã nạp kèm nội dung để admin có thể xem trực tiếp trên FE. */
   async getAllDocuments() {
-    return this.prisma.$queryRaw`
-      SELECT id, title, content, category, source, "accessLevel", "createdAt", "updatedAt"
-      FROM "technical_documents"
-      ORDER BY "createdAt" DESC
-    `;
+    const documents = await this.prisma.ragDocument.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        chunks: {
+          orderBy: { chunkIndex: 'asc' },
+          take: 1,
+          select: { content: true },
+        },
+      },
+    });
+
+    return documents.map((document) => this.mapDocumentForAdmin(document));
   }
 
-  /**
-   * Cập nhật tài liệu hiện có và vector hóa lại để dữ liệu RAG không bị lệch nội dung.
-   */
   async updateDocument(id: number, dto: IngestDocumentDto) {
-    const existing = await this.prisma.technicalDocument.findUnique({
+    const existing = await this.prisma.ragDocument.findUnique({
       where: { id },
       select: { id: true },
     });
@@ -119,42 +169,79 @@ export class RagService {
     }
 
     const { title, content, category, source, accessLevel = 'ADVANCED' } = dto;
-    const textToEmbed = `Tiêu đề: ${title}\nNội dung: ${content}`;
-    const embeddingValues = await this.generateEmbedding(textToEmbed);
-    const embeddingString = `[${embeddingValues.join(',')}]`;
+    const textToEmbed = this.buildEmbeddingText(title, content);
+    const embeddingValues =
+      await this.ragEmbeddingService.generateEmbedding(textToEmbed);
+    const embeddingString =
+      this.ragEmbeddingService.toPgVector(embeddingValues);
+    const totalCharacters = content.length;
 
     try {
-      const rows = await this.prisma.$queryRaw<
-        Array<{
-          id: number;
-          title: string;
-          content: string;
-          category: string | null;
-          source: string | null;
-          accessLevel: string;
-          createdAt: Date;
-          updatedAt: Date;
-        }>
-      >`
-        UPDATE "technical_documents"
-        SET
-          "title" = ${title},
-          "content" = ${content},
-          "category" = ${category || null},
-          "source" = ${source || null},
-          "accessLevel" = CAST(${accessLevel} AS "AccessLevel"),
-          "embedding" = CAST(${embeddingString} AS vector),
-          "updatedAt" = now()
-        WHERE "id" = ${id}
-        RETURNING id, title, content, category, source, "accessLevel", "createdAt", "updatedAt"
-      `;
+      const document = await this.prisma.$transaction(async (tx) => {
+        await tx.ragDocument.update({
+          where: { id },
+          data: {
+            title,
+            category: category || null,
+            source: source || null,
+            accessLevel,
+            status: RagDocumentStatus.EMBEDDING,
+            totalCharacters,
+          },
+        });
+
+        const chunk = await tx.ragChunk.upsert({
+          where: {
+            documentId_chunkIndex: {
+              documentId: id,
+              chunkIndex: 0,
+            },
+          },
+          update: {
+            title,
+            content,
+            category: category || null,
+            accessLevel,
+            charCount: totalCharacters,
+          },
+          create: {
+            documentId: id,
+            chunkIndex: 0,
+            title,
+            content,
+            category: category || null,
+            accessLevel,
+            tags: [],
+            charCount: totalCharacters,
+          },
+        });
+
+        await this.updateChunkEmbedding(tx, chunk.id, embeddingString);
+
+        return tx.ragDocument.update({
+          where: { id },
+          data: {
+            status: RagDocumentStatus.READY,
+            totalChunks: 1,
+            totalCharacters,
+            indexedAt: new Date(),
+          },
+          include: {
+            chunks: {
+              orderBy: { chunkIndex: 'asc' },
+              take: 1,
+              select: { content: true },
+            },
+          },
+        });
+      });
 
       return {
         message: 'Tài liệu đã được cập nhật và vector hóa lại thành công',
-        document: rows[0] ?? null,
+        document: this.mapDocumentForAdmin(document),
       };
     } catch (error) {
-      this.logger.error('Lỗi khi cập nhật tài liệu trong database:', error);
+      this.logger.error('Lỗi khi cập nhật tài liệu RAG mới trong database:', error);
       throw new HttpException(
         'Không thể cập nhật tài liệu trong database',
         HttpStatus.INTERNAL_SERVER_ERROR,
@@ -162,11 +249,8 @@ export class RagService {
     }
   }
 
-  /**
-   * Xóa tài liệu khỏi kho tri thức RAG.
-   */
   async deleteDocument(id: number) {
-    const existing = await this.prisma.technicalDocument.findUnique({
+    const existing = await this.prisma.ragDocument.findUnique({
       where: { id },
       select: { id: true },
     });
@@ -176,7 +260,7 @@ export class RagService {
     }
 
     try {
-      await this.prisma.technicalDocument.delete({
+      await this.prisma.ragDocument.delete({
         where: { id },
       });
 
@@ -185,8 +269,7 @@ export class RagService {
         id,
       };
     } catch (error) {
-      this.logger.error('Lỗi khi xóa tài liệu trong database:', error);
-
+      this.logger.error('Lỗi khi xóa tài liệu RAG mới trong database:', error);
       throw new HttpException(
         'Không thể xóa tài liệu trong database',
         HttpStatus.INTERNAL_SERVER_ERROR,

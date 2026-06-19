@@ -3,7 +3,7 @@ import { GoogleGenerativeAI, GenerativeModel, SchemaType } from '@google/generat
 import { PrismaService } from '../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
 
-import { MechanicAiService } from '../mechanic-ai/mechanic-ai.service';
+import { RagRetrievalService } from '../rag/rag-retrieval.service';
 
 // ═══════════════════════════════════════════════════════════════════
 // SYSTEM PROMPT — SmartElec Buddy
@@ -146,7 +146,7 @@ export class AiService {
   constructor(
     private prisma: PrismaService,
     private configService: ConfigService,
-    private mechanicAiService: MechanicAiService,
+    private ragRetrievalService: RagRetrievalService,
   ) {
     const apiKey = this.configService.get<string>('GEMINI_API_KEY') || '';
     this.genAI = new GoogleGenerativeAI(apiKey);
@@ -238,8 +238,17 @@ export class AiService {
       const accessLevel = (user?.role === 'TECHNICIAN' || user?.role === 'ADMIN') ? 'ADVANCED' : 'BASIC';
       
       let ragContext = '';
+      let retrievedChunks: any[] = [];
       try {
-        const ragRes = await this.mechanicAiService.findRelevantDocs(message, accessLevel, 3);
+        const primaryDevice = devices.length === 1 ? devices[0] : null;
+        const ragRes = await this.ragRetrievalService.findRelevantChunks({
+          query: message,
+          accessLevel,
+          limit: 3,
+          category: primaryDevice?.category || null,
+          brand: primaryDevice?.brandName || null,
+          modelCode: primaryDevice?.modelCode || null,
+        });
         let results = ragRes.results as any[];
 
         const errorCodesMatch = message.match(/\b[A-Z][0-9]\b|\b[A-Z]{2,3}[0-9]?\b/g); 
@@ -252,6 +261,8 @@ export class AiService {
             return 0;
           });
         }
+
+        retrievedChunks = results;
 
         if (results && results.length > 0) {
           const docsText = results.map((d: any) => `- [${d.title}] (Nguồn: ${d.source || 'Tài liệu nội bộ'}): ${d.content}`).join('\n\n');
@@ -366,10 +377,21 @@ ${negativeText || '   (Chưa có)'}
         
        sessionId = await this.saveRepairCase(userId, device, symptom, parsed.text || 'Booking via AI', sessionId);
 
+        let logId: number | null = null;
+        try {
+          logId = await this.saveReasoningLog(userId, sessionId, message, prevState, parsed);
+          if (logId && retrievedChunks.length > 0) {
+            await this.saveRetrievedChunks(logId, retrievedChunks);
+          }
+        } catch (e) {
+          this.logger.error('Failed to save reasoning log', e);
+        }
+
         return {
           ...parsed,
           is_booking_triggered: true, // Đảm bảo luôn luôn là true khi trả về
           sessionId,
+          logId,
         };
       }
 
@@ -395,8 +417,10 @@ ${negativeText || '   (Chưa có)'}
       let logId: number | null = null;
       try {
         logId = await this.saveReasoningLog(userId, sessionId, message, prevState, parsed);
+        if (logId && retrievedChunks.length > 0) {
+          await this.saveRetrievedChunks(logId, retrievedChunks);
+        }
       } catch (e) {
-        this.prisma.aiReasoningLog
         this.logger.error('Failed to save reasoning log', e);
       }
 
@@ -452,6 +476,23 @@ ${negativeText || '   (Chưa có)'}
     } catch (err) {
       this.logger.error('Error saving reasoning log to DB', err);
       return null;
+    }
+  }
+
+  private async saveRetrievedChunks(logId: number, results: any[]) {
+    try {
+      await this.prisma.aiRetrievedChunk.createMany({
+        data: results.map((result, index) => ({
+          logId,
+          chunkId: Number(result.chunkId),
+          score: typeof result.score === 'number' ? result.score : null,
+          rank: index + 1,
+        })),
+        skipDuplicates: true,
+      });
+    } catch (error) {
+      this.logger.warn(`Khong the luu ai_retrieved_chunks cho log #${logId}`);
+      this.logger.warn(error);
     }
   }
 
