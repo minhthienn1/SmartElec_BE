@@ -20,18 +20,12 @@ import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { ArchiveRagDocumentDto } from '../../rag/dto/archive-rag-document.dto';
 import { IngestDocumentDto } from '../../rag/dto/ingest-document.dto';
 import { ImportRagFileDto } from '../../rag/dto/import-rag-file.dto';
+import {
+  ALLOWED_RAG_IMPORT_EXTENSIONS,
+  RAG_LIMITS,
+} from '../../rag/rag.constants';
 import { RagDocumentChunksQueryDto } from '../../rag/dto/rag-document-chunks-query.dto';
 import { AdminRagKnowledgeService } from './admin-rag-knowledge.service';
-
-const MAX_RAG_FILE_SIZE_BYTES = 10 * 1024 * 1024;
-const ALLOWED_RAG_IMPORT_EXTENSIONS = new Set([
-  '.txt',
-  '.md',
-  '.csv',
-  '.docx',
-  '.xlsx',
-  '.pdf',
-]);
 
 @UseGuards(JwtAuthGuard)
 @Controller('admin/rag-knowledge')
@@ -39,6 +33,11 @@ export class AdminRagKnowledgeController {
   constructor(
     private readonly adminRagKnowledgeService: AdminRagKnowledgeService,
   ) {}
+
+  @Get('stats')
+  getStats() {
+    return this.adminRagKnowledgeService.getStats();
+  }
 
   @Get('documents')
   getDocuments() {
@@ -71,7 +70,7 @@ export class AdminRagKnowledgeController {
   @Post('import')
   @UseInterceptors(
     FileInterceptor('file', {
-      limits: { fileSize: MAX_RAG_FILE_SIZE_BYTES },
+      limits: { fileSize: RAG_LIMITS.MAX_FILE_SIZE_BYTES },
     }),
   )
   importDocument(
@@ -83,7 +82,7 @@ export class AdminRagKnowledgeController {
       throw new BadRequestException('Không tìm thấy file để import');
     }
 
-    if (file.size > MAX_RAG_FILE_SIZE_BYTES) {
+    if (file.size > RAG_LIMITS.MAX_FILE_SIZE_BYTES) {
       throw new BadRequestException('File quá lớn. Tối đa cho phép: 10MB.');
     }
 

@@ -8,6 +8,8 @@ import {
 } from '@nestjs/common';
 import { Prisma, RagDocumentStatus, RagFileType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { mapWithConcurrency } from './rag-batch.util';
+import { RAG_LIMITS } from './rag.constants';
 import { ArchiveRagDocumentDto } from './dto/archive-rag-document.dto';
 import { IngestDocumentDto } from './dto/ingest-document.dto';
 import { RagDocumentChunksQueryDto } from './dto/rag-document-chunks-query.dto';
@@ -21,6 +23,7 @@ type DocumentListItem = {
   title: string;
   description: string | null;
   content: string;
+  contentPreview: string;
   category: string | null;
   brand: string | null;
   modelCode: string | null;
@@ -61,6 +64,14 @@ export class RagService {
 
   private estimateTokenCount(content: string) {
     return Math.max(1, Math.ceil(content.length / 4));
+  }
+
+  private buildContentPreview(content: string) {
+    if (content.length <= RAG_LIMITS.DOCUMENT_CONTENT_PREVIEW_CHARS) {
+      return content;
+    }
+
+    return `${content.slice(0, RAG_LIMITS.DOCUMENT_CONTENT_PREVIEW_CHARS)}...`;
   }
 
   private async ensureDocumentExists(id: number) {
@@ -109,11 +120,14 @@ export class RagService {
     totalCharacters: number;
     chunks: Array<{ content: string }>;
   }): DocumentListItem {
+    const preview = this.buildContentPreview(document.chunks[0]?.content || '');
+
     return {
       id: document.id,
       title: document.title,
       description: document.description,
-      content: document.chunks[0]?.content || '',
+      content: preview,
+      contentPreview: preview,
       category: document.category,
       brand: document.brand,
       modelCode: document.modelCode,
@@ -128,6 +142,76 @@ export class RagService {
       totalChunks: document.totalChunks,
       totalCharacters: document.totalCharacters,
     };
+  }
+
+  private buildReindexChunkDrafts(title: string, cleanedText: string) {
+    const chunkDrafts = this.ragChunkingService
+      .chunk({ content: cleanedText })
+      .filter(
+        (chunk) =>
+          chunk.charCount >= RAG_LIMITS.MIN_CHUNK_CHARS ||
+          cleanedText.length <= RAG_LIMITS.MIN_CHUNK_CHARS,
+      );
+
+    return chunkDrafts.map((chunk) => ({
+      ...chunk,
+      title: this.buildChunkTitle(title, chunk.chunkIndex, chunkDrafts.length),
+      tokenCount: this.estimateTokenCount(chunk.content),
+    }));
+  }
+
+  private async buildReindexPayloads(
+    document: {
+      id: number;
+      title: string;
+      category: string | null;
+      brand: string | null;
+      modelCode: string | null;
+      accessLevel: string;
+    },
+    chunkDrafts: Array<{
+      chunkIndex: number;
+      title: string;
+      content: string;
+      charCount: number;
+      tokenCount: number;
+    }>,
+  ) {
+    return mapWithConcurrency(
+      chunkDrafts,
+      RAG_LIMITS.EMBEDDING_BATCH_CONCURRENCY,
+      async (chunk, index) => {
+        try {
+          const embeddingValues =
+            await this.ragEmbeddingService.generateEmbedding(
+              buildChunkEmbeddingText({
+                documentTitle: document.title,
+                category: document.category,
+                brand: document.brand,
+                modelCode: document.modelCode,
+                accessLevel: document.accessLevel,
+                chunkTitle: chunk.title,
+                metadata: { source: 'reindex' },
+                content: chunk.content,
+              }),
+            );
+
+          return {
+            ...chunk,
+            chunkIndex: index,
+            embedding: this.ragEmbeddingService.toPgVector(embeddingValues),
+          };
+        } catch (error) {
+          this.logger.error(
+            `Loi embedding khi reindex documentId=${document.id} chunkIndex=${index}`,
+            error,
+          );
+          throw new BadRequestException(
+            `Khong the tao embedding cho chunk ${index + 1} khi reindex tai lieu.`,
+          );
+        }
+      },
+    );
   }
 
   async ingestDocument(dto: IngestDocumentDto) {
@@ -211,7 +295,23 @@ export class RagService {
   async getAllDocuments() {
     const documents = await this.prisma.ragDocument.findMany({
       orderBy: { createdAt: 'desc' },
-      include: {
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        source: true,
+        category: true,
+        brand: true,
+        modelCode: true,
+        accessLevel: true,
+        fileType: true,
+        originalFileName: true,
+        createdAt: true,
+        updatedAt: true,
+        indexedAt: true,
+        status: true,
+        totalChunks: true,
+        totalCharacters: true,
         chunks: {
           orderBy: { chunkIndex: 'asc' },
           take: 1,
@@ -221,6 +321,68 @@ export class RagService {
     });
 
     return documents.map((document) => this.mapDocumentForAdmin(document));
+  }
+
+  async getDocumentStats() {
+    const [
+      totalDocuments,
+      readyDocuments,
+      failedDocuments,
+      archivedDocuments,
+      totalChunks,
+      activeChunks,
+      aggregate,
+      documentsByFileType,
+      documentsByStatus,
+    ] = await Promise.all([
+      this.prisma.ragDocument.count(),
+      this.prisma.ragDocument.count({
+        where: { status: RagDocumentStatus.READY },
+      }),
+      this.prisma.ragDocument.count({
+        where: { status: RagDocumentStatus.FAILED },
+      }),
+      this.prisma.ragDocument.count({
+        where: { isActive: false },
+      }),
+      this.prisma.ragChunk.count(),
+      this.prisma.ragChunk.count({
+        where: { isActive: true },
+      }),
+      this.prisma.ragDocument.aggregate({
+        _sum: {
+          totalCharacters: true,
+          totalTokens: true,
+        },
+      }),
+      this.prisma.ragDocument.groupBy({
+        by: ['fileType'],
+        _count: { _all: true },
+      }),
+      this.prisma.ragDocument.groupBy({
+        by: ['status'],
+        _count: { _all: true },
+      }),
+    ]);
+
+    return {
+      totalDocuments,
+      readyDocuments,
+      failedDocuments,
+      archivedDocuments,
+      totalChunks,
+      activeChunks,
+      totalCharacters: aggregate._sum.totalCharacters ?? 0,
+      totalTokens: aggregate._sum.totalTokens ?? 0,
+      documentsByFileType: documentsByFileType.map((item) => ({
+        fileType: item.fileType,
+        count: item._count._all,
+      })),
+      documentsByStatus: documentsByStatus.map((item) => ({
+        status: item.status,
+        count: item._count._all,
+      })),
+    };
   }
 
   async getDocumentDetail(id: number) {
@@ -296,8 +458,8 @@ export class RagService {
         title: chunk.title,
         section: chunk.section,
         contentPreview:
-          chunk.content.length > 240
-            ? `${chunk.content.slice(0, 240)}...`
+          chunk.content.length > RAG_LIMITS.DOCUMENT_CONTENT_PREVIEW_CHARS
+            ? `${chunk.content.slice(0, RAG_LIMITS.DOCUMENT_CONTENT_PREVIEW_CHARS)}...`
             : chunk.content,
         charCount: chunk.charCount,
         tokenCount: chunk.tokenCount,
@@ -691,39 +853,33 @@ export class RagService {
       });
 
       const cleanedText = this.ragTextCleanerService.clean(sourceText);
-      const chunkDrafts = this.ragChunkingService.chunk({ content: cleanedText });
+      if (!cleanedText) {
+        throw new BadRequestException('Tai lieu khong con noi dung hop le sau khi lam sach');
+      }
+      if (cleanedText.length < RAG_LIMITS.MIN_CHUNK_CHARS) {
+        throw new BadRequestException(
+          'Noi dung tai lieu qua ngan sau khi lam sach, khong du de reindex.',
+        );
+      }
+      if (cleanedText.length > RAG_LIMITS.MAX_PARSED_TEXT_CHARS) {
+        throw new BadRequestException(
+          'Tai lieu qua lon sau khi parse, vui long chia nho file theo chuong hoac chu de.',
+        );
+      }
+
+      const chunkDrafts = this.buildReindexChunkDrafts(
+        document.title,
+        cleanedText,
+      );
 
       if (chunkDrafts.length === 0) {
         throw new BadRequestException('Khong the tao chunk moi tu tai lieu hien tai');
       }
-
-      const preparedChunks = await Promise.all(
-        chunkDrafts.map(async (chunk) => {
-          const tokenCount = this.estimateTokenCount(chunk.content);
-          const embeddingValues =
-            await this.ragEmbeddingService.generateEmbedding(
-              buildChunkEmbeddingText({
-                documentTitle: document.title,
-                category: document.category,
-                brand: document.brand,
-                modelCode: document.modelCode,
-                accessLevel: document.accessLevel,
-                chunkTitle: this.buildChunkTitle(
-                  document.title,
-                  chunk.chunkIndex,
-                  chunkDrafts.length,
-                ),
-                content: chunk.content,
-              }),
-            );
-
-          return {
-            ...chunk,
-            tokenCount,
-            embedding: this.ragEmbeddingService.toPgVector(embeddingValues),
-          };
-        }),
-      );
+      if (chunkDrafts.length > RAG_LIMITS.MAX_CHUNKS_PER_DOCUMENT) {
+        throw new BadRequestException(
+          'Tai lieu tao ra qua nhieu chunk, vui long chia nho file.',
+        );
+      }
 
       await this.prisma.ragDocument.update({
         where: { id },
@@ -731,6 +887,18 @@ export class RagService {
           status: RagDocumentStatus.EMBEDDING,
         },
       });
+
+      const preparedChunks = await this.buildReindexPayloads(
+        {
+          id: document.id,
+          title: document.title,
+          category: document.category,
+          brand: document.brand,
+          modelCode: document.modelCode,
+          accessLevel: document.accessLevel,
+        },
+        chunkDrafts,
+      );
 
       const totalTokens = preparedChunks.reduce(
         (sum, chunk) => sum + chunk.tokenCount,

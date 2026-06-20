@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
 
 import { RagRetrievalService } from '../rag/rag-retrieval.service';
+import { RAG_LIMITS } from '../rag/rag.constants';
 
 // ═══════════════════════════════════════════════════════════════════
 // SYSTEM PROMPT — SmartElec Buddy
@@ -252,7 +253,10 @@ export class AiService {
       });
       const accessLevel = (user?.role === 'TECHNICIAN' || user?.role === 'ADMIN') ? 'ADVANCED' : 'BASIC';
       
-      let ragContext = '';
+      let ragContext = `
+[KIáº¾N THá»¨C Tá»ª Há»† THá»NG]:
+Khong tim thay tai lieu noi bo phu hop cho cau hoi nay. Khong duoc bia nguon hoac noi rang da tham khao tai lieu noi bo neu thuc te khong co.
+`;
       let retrievedChunks: any[] = [];
       try {
         const fallbackDevice = devices.length === 1 ? devices[0] : null;
@@ -269,7 +273,8 @@ export class AiService {
         let ragRes = await this.ragRetrievalService.findRelevantChunks({
           query: message,
           accessLevel,
-          limit: 3,
+          limit: RAG_LIMITS.DEFAULT_RETRIEVAL_LIMIT,
+          minScore: RAG_LIMITS.MIN_RETRIEVAL_SCORE,
           category: categoryFilter,
           brand: brandFilter,
           modelCode: modelCodeFilter,
@@ -283,7 +288,21 @@ export class AiService {
           ragRes = await this.ragRetrievalService.findRelevantChunks({
             query: message,
             accessLevel,
-            limit: 3,
+            limit: RAG_LIMITS.DEFAULT_RETRIEVAL_LIMIT,
+            minScore: RAG_LIMITS.MIN_RETRIEVAL_SCORE,
+          });
+          results = ragRes.results as any[];
+        }
+
+        if (results.length === 0) {
+          ragRes = await this.ragRetrievalService.findRelevantChunks({
+            query: message,
+            accessLevel,
+            limit: RAG_LIMITS.DEFAULT_RETRIEVAL_LIMIT,
+            minScore: 0,
+            category: categoryFilter,
+            brand: brandFilter,
+            modelCode: modelCodeFilter,
           });
           results = ragRes.results as any[];
         }

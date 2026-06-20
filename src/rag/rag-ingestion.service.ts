@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   HttpException,
   HttpStatus,
   Injectable,
@@ -15,6 +16,8 @@ import { createHash } from 'crypto';
 import { extname } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { UploadService } from '../upload/upload.service';
+import { mapWithConcurrency } from './rag-batch.util';
+import { RAG_LIMITS } from './rag.constants';
 import { ImportRagFileDto } from './dto/import-rag-file.dto';
 import { RagChunkingService } from './rag-chunking.service';
 import { RagEmbeddingService } from './rag-embedding.service';
@@ -131,8 +134,19 @@ export class RagIngestionService {
   }
 
   private async markFailed(documentId: number, error: unknown) {
+    const responseMessage =
+      error instanceof HttpException ? error.getResponse() : null;
     const message =
-      error instanceof Error ? error.message : 'Khong the import tai lieu';
+      typeof responseMessage === 'string'
+        ? responseMessage
+        : typeof responseMessage === 'object' &&
+            responseMessage &&
+            'message' in responseMessage &&
+            typeof responseMessage.message === 'string'
+          ? responseMessage.message
+          : error instanceof Error
+            ? error.message
+            : 'Khong the import tai lieu';
 
     await this.prisma.ragDocument.update({
       where: { id: documentId },
@@ -149,31 +163,146 @@ export class RagIngestionService {
     parserMetadata?: Record<string, unknown>,
     parsedSegments?: ParsedSegment[],
   ) {
-    if (parsedSegments && parsedSegments.length > 0) {
-      return parsedSegments.flatMap((segment, segmentIndex) => {
-        const chunkedSegments = this.ragChunkingService.chunk({
-          content: segment.content,
-        });
+    const normalizedSegments = (segments: Array<{
+      title: string;
+      section: string | null;
+      content: string;
+      charCount: number;
+      metadata?: Record<string, unknown>;
+    }>) =>
+      segments.filter(
+        (segment) =>
+          segment.charCount >= RAG_LIMITS.MIN_CHUNK_CHARS ||
+          segments.length === 1,
+      );
 
-        return chunkedSegments.map((chunk) => ({
-          title:
-            segment.title ||
-            this.buildChunkTitle(baseTitle, segmentIndex, parsedSegments.length),
-          section: segment.section ?? null,
-          content: chunk.content,
-          charCount: chunk.charCount,
-          metadata: segment.metadata ?? parserMetadata,
-        }));
-      });
+    if (parsedSegments && parsedSegments.length > 0) {
+      return normalizedSegments(
+        parsedSegments.flatMap((segment, segmentIndex) => {
+          const chunkedSegments = this.ragChunkingService.chunk({
+            content: segment.content,
+          });
+
+          return chunkedSegments.map((chunk) => ({
+            title:
+              segment.title ||
+              this.buildChunkTitle(
+                baseTitle,
+                segmentIndex,
+                parsedSegments.length,
+              ),
+            section: segment.section ?? null,
+            content: chunk.content,
+            charCount: chunk.charCount,
+            metadata: segment.metadata ?? parserMetadata,
+          }));
+        }),
+      );
     }
 
-    return this.ragChunkingService.chunk({ content }).map((chunk) => ({
-      title: this.buildChunkTitle(baseTitle, chunk.chunkIndex, 1),
-      section: null,
-      content: chunk.content,
-      charCount: chunk.charCount,
-      metadata: parserMetadata,
-    }));
+    return normalizedSegments(
+      this.ragChunkingService.chunk({ content }).map((chunk) => ({
+        title: this.buildChunkTitle(baseTitle, chunk.chunkIndex, 1),
+        section: null,
+        content: chunk.content,
+        charCount: chunk.charCount,
+        metadata: parserMetadata,
+      })),
+    );
+  }
+
+  private async ensureNoActiveDuplicate(checksum: string) {
+    const existing = await this.prisma.ragDocument.findFirst({
+      where: {
+        checksum,
+        isActive: true,
+        status: {
+          in: [
+            RagDocumentStatus.UPLOADED,
+            RagDocumentStatus.PARSING,
+            RagDocumentStatus.CHUNKING,
+            RagDocumentStatus.EMBEDDING,
+            RagDocumentStatus.READY,
+          ],
+        },
+      },
+      select: {
+        id: true,
+        status: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (existing) {
+      throw new ConflictException({
+        message: 'File nay da ton tai trong kho tri thuc RAG.',
+        existingDocumentId: existing.id,
+        existingStatus: existing.status,
+      });
+    }
+  }
+
+  private async buildChunkPayloads(
+    documentId: number,
+    chunks: Array<{
+      title: string;
+      section: string | null;
+      content: string;
+      charCount: number;
+      metadata?: Record<string, unknown>;
+    }>,
+    context: {
+      baseTitle: string;
+      category: string | null;
+      brand: string | null;
+      modelCode: string | null;
+      source: string | null;
+      accessLevel: AccessLevel;
+    },
+  ) {
+    return mapWithConcurrency(
+      chunks,
+      RAG_LIMITS.EMBEDDING_BATCH_CONCURRENCY,
+      async (chunk, index) => {
+        try {
+          const tokenCount = this.estimateTokenCount(chunk.content);
+          const embeddingValues =
+            await this.ragEmbeddingService.generateEmbedding(
+              buildChunkEmbeddingText({
+                documentTitle: context.baseTitle,
+                category: context.category,
+                brand: context.brand,
+                modelCode: context.modelCode,
+                source: context.source,
+                accessLevel: context.accessLevel,
+                chunkTitle: chunk.title,
+                section: chunk.section,
+                metadata: chunk.metadata,
+                content: chunk.content,
+              }),
+            );
+
+          return {
+            chunkIndex: index,
+            title: chunk.title,
+            section: chunk.section,
+            content: chunk.content,
+            charCount: chunk.charCount,
+            tokenCount,
+            metadata: chunk.metadata,
+            embedding: this.ragEmbeddingService.toPgVector(embeddingValues),
+          };
+        } catch (error) {
+          this.logger.error(
+            `Loi embedding chunk documentId=${documentId} chunkIndex=${index}`,
+            error,
+          );
+          throw new BadRequestException(
+            `Khong the tao embedding cho chunk ${index + 1} cua tai lieu.`,
+          );
+        }
+      },
+    );
   }
 
   async importFile(
@@ -187,6 +316,7 @@ export class RagIngestionService {
 
     const checksum = createHash('sha256').update(file.buffer).digest('hex');
     const fileType = this.ragFileParserService.inferFileType(file);
+    await this.ensureNoActiveDuplicate(checksum);
     const storedFileName = `${Date.now()}-${checksum.slice(0, 12)}${extname(file.originalname).toLowerCase()}`;
     const uploadResult = await this.uploadService.uploadFileWithMetadata(
       file,
@@ -243,6 +373,16 @@ export class RagIngestionService {
       if (!cleanedText) {
         throw new BadRequestException('File khong co noi dung hop le sau khi lam sach');
       }
+      if (cleanedText.length < RAG_LIMITS.MIN_CHUNK_CHARS) {
+        throw new BadRequestException(
+          'Noi dung tai lieu qua ngan sau khi parse, khong du de tao chunk co nghia.',
+        );
+      }
+      if (cleanedText.length > RAG_LIMITS.MAX_PARSED_TEXT_CHARS) {
+        throw new BadRequestException(
+          'Tai lieu qua lon sau khi parse, vui long chia nho file theo chuong hoac chu de.',
+        );
+      }
 
       const chunkDrafts = this.buildSegments(
         baseTitle,
@@ -253,6 +393,11 @@ export class RagIngestionService {
       if (chunkDrafts.length === 0) {
         throw new BadRequestException('Khong the tach noi dung thanh chunk');
       }
+      if (chunkDrafts.length > RAG_LIMITS.MAX_CHUNKS_PER_DOCUMENT) {
+        throw new BadRequestException(
+          'Tai lieu tao ra qua nhieu chunk, vui long chia nho file.',
+        );
+      }
 
       await this.prisma.ragDocument.update({
         where: { id: documentId },
@@ -262,43 +407,20 @@ export class RagIngestionService {
         },
       });
 
-      const chunkPayloads = await Promise.all(
-        chunkDrafts.map(async (chunk, index) => {
-          const tokenCount = this.estimateTokenCount(chunk.content);
-          const embeddingValues =
-            await this.ragEmbeddingService.generateEmbedding(
-              buildChunkEmbeddingText({
-                documentTitle: baseTitle,
-                category,
-                brand,
-                modelCode,
-                source,
-                accessLevel,
-                chunkTitle: chunk.title,
-                section: chunk.section,
-                metadata: chunk.metadata,
-                content: chunk.content,
-              }),
-            );
-
-          return {
-            chunkIndex: index,
-            title: chunk.title,
-            section: chunk.section,
-            content: chunk.content,
-            charCount: chunk.charCount,
-            tokenCount,
-            metadata: chunk.metadata,
-            embedding: this.ragEmbeddingService.toPgVector(embeddingValues),
-          };
-        }),
-      );
-
       await this.prisma.ragDocument.update({
         where: { id: documentId },
         data: {
           status: RagDocumentStatus.EMBEDDING,
         },
+      });
+
+      const chunkPayloads = await this.buildChunkPayloads(documentId, chunkDrafts, {
+        baseTitle,
+        category,
+        brand,
+        modelCode,
+        source,
+        accessLevel,
       });
 
       const totalTokens = chunkPayloads.reduce(

@@ -17,6 +17,10 @@ export class AdminRagKnowledgeService {
     return this.ragService.getAllDocuments();
   }
 
+  getStats() {
+    return this.ragService.getDocumentStats();
+  }
+
   getDocumentDetail(id: number) {
     return this.ragService.getDocumentDetail(id);
   }

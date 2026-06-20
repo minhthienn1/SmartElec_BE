@@ -2,11 +2,13 @@ import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { AccessLevel, Prisma, RagDocumentStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RagEmbeddingService } from './rag-embedding.service';
+import { RAG_LIMITS } from './rag.constants';
 
 type RetrievalParams = {
   query: string;
   accessLevel: 'BASIC' | 'ADVANCED';
   limit?: number;
+  minScore?: number;
   category?: string | null;
   brand?: string | null;
   modelCode?: string | null;
@@ -44,7 +46,8 @@ export class RagRetrievalService {
     const {
       query,
       accessLevel,
-      limit = 3,
+      limit = RAG_LIMITS.DEFAULT_RETRIEVAL_LIMIT,
+      minScore = 0,
       category,
       brand,
       modelCode,
@@ -96,7 +99,9 @@ export class RagRetrievalService {
 
       const whereSql = Prisma.join(whereClauses, ' AND ');
 
-      const results = await this.prisma.$queryRaw<RetrievalRow[]>`
+      const candidateLimit =
+        Math.max(limit, RAG_LIMITS.DEFAULT_RETRIEVAL_LIMIT) * 2;
+      const rawResults = await this.prisma.$queryRaw<RetrievalRow[]>`
         SELECT
           c."id" AS "id",
           c."id" AS "chunkId",
@@ -116,8 +121,12 @@ export class RagRetrievalService {
         INNER JOIN "rag_documents" d ON d."id" = c."documentId"
         WHERE ${whereSql}
         ORDER BY "distance" ASC
-        LIMIT ${limit}
+        LIMIT ${candidateLimit}
       `;
+
+      const results = rawResults
+        .filter((item) => item.score >= minScore)
+        .slice(0, limit);
 
       return {
         message: 'Tìm kiếm thành công',
