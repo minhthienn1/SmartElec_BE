@@ -25,18 +25,19 @@ model User {
   gender              Gender
   averageRating       Float                      @default(0.0)
   fcmToken            String?
+  googleId            String?                    @unique
   isOnline            Boolean                    @default(false)
   latitude            Float?
   longitude           Float?
-  totalReviews        Int                        @default(0)
-  googleId            String?                    @unique
   needsPassword       Boolean                    @default(false)
+  totalReviews        Int                        @default(0)
   zaloId              String?                    @unique
   technicianSessions  ChatSession[]              @relation("TechnicianSessions")
   chatSessions        ChatSession[]              @relation("CustomerSessions")
   devices             Device[]
   sentMessages        Message[]                  @relation("SentMessages")
   quotesCreated       Quote[]
+  rag_documents       rag_documents[]
   reviewsReceived     Review[]                   @relation("TechnicianReviews")
   reviewsGiven        Review[]                   @relation("UserReviews")
   assignmentHistories SessionAssignmentHistory[]
@@ -73,15 +74,15 @@ model ChatSession {
   createdAt           DateTime                   @default(now())
   updatedAt           DateTime                   @updatedAt
   deviceId            Int?
-  status              JobStatus                  @default(AI_CONSULTING)
-  technicianId        Int?
-  version             Int                        @default(1)
   address             String?
   contactName         String?
   contactPhone        String?
+  isHiddenByCustomer  Boolean                    @default(false)
   latitude            Float?
   longitude           Float?
-  isHiddenByCustomer  Boolean                    @default(false)
+  status              JobStatus                  @default(AI_CONSULTING)
+  technicianId        Int?
+  version             Int                        @default(1)
   sessionType         SessionType                @default(AI_DIAGNOSIS)
   device              Device?                    @relation(fields: [deviceId], references: [id])
   technician          User?                      @relation("TechnicianSessions", fields: [technicianId], references: [id])
@@ -160,19 +161,20 @@ model SessionAssignmentHistory {
 }
 
 model AiReasoningLog {
-  id             Int      @id @default(autoincrement())
-  sessionId      Int?
-  userId         Int
-  userMsg        String
-  prevState      Json?
-  nextState      Json?
-  riskLevel      String?
-  aiResponse     String?
-  aiFeedback     String?
-  score          Int      @default(0)
-  deviceCategory String?
-  isGolden       Boolean  @default(false)
-  createdAt      DateTime @default(now())
+  id                  Int                   @id @default(autoincrement())
+  sessionId           Int?
+  userId              Int
+  userMsg             String
+  prevState           Json?
+  nextState           Json?
+  riskLevel           String?
+  aiResponse          String?
+  aiFeedback          String?
+  score               Int                   @default(0)
+  deviceCategory      String?
+  isGolden            Boolean               @default(false)
+  createdAt           DateTime              @default(now())
+  ai_retrieved_chunks ai_retrieved_chunks[]
 
   @@map("ai_reasoning_logs")
 }
@@ -183,12 +185,104 @@ model TechnicalDocument {
   content     String
   category    String?
   source      String?
+  embedding   Unsupported("vector")?
   accessLevel AccessLevel            @default(ADVANCED)
   createdAt   DateTime               @default(now())
   updatedAt   DateTime               @updatedAt
-  embedding   Unsupported("vector")?
 
   @@map("technical_documents")
+}
+
+model ai_retrieved_chunks {
+  id                Int            @id @default(autoincrement())
+  logId             Int
+  chunkId           Int
+  score             Float?
+  rank              Int?
+  createdAt         DateTime       @default(now())
+  rag_chunks        rag_chunks     @relation(fields: [chunkId], references: [id], onDelete: Cascade)
+  ai_reasoning_logs AiReasoningLog @relation(fields: [logId], references: [id], onDelete: Cascade)
+
+  @@unique([logId, chunkId])
+  @@index([chunkId])
+  @@index([logId])
+}
+
+model rag_chunks {
+  id                  Int                    @id @default(autoincrement())
+  documentId          Int
+  chunkIndex          Int
+  title               String?
+  section             String?
+  content             String
+  pageNumber          Int?
+  sheetName           String?
+  rowIndex            Int?
+  metadata            Json?
+  category            String?
+  brand               String?
+  modelCode           String?
+  tags                String[]
+  accessLevel         AccessLevel            @default(ADVANCED)
+  tokenCount          Int?
+  charCount           Int?
+  embedding           Unsupported("vector")?
+  isActive            Boolean                @default(true)
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime
+  ai_retrieved_chunks ai_retrieved_chunks[]
+  rag_documents       rag_documents          @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, chunkIndex])
+  @@index([accessLevel])
+  @@index([brand])
+  @@index([category])
+  @@index([documentId])
+  @@index([isActive])
+}
+
+model rag_documents {
+  id               Int               @id @default(autoincrement())
+  title            String
+  description      String?
+  originalFileName String?
+  storedFileName   String?
+  fileUrl          String?
+  storageKey       String?
+  mimeType         String?
+  fileType         RagFileType       @default(UNKNOWN)
+  fileSizeBytes    BigInt?
+  checksum         String?
+  kind             RagDocumentKind?
+  category         String?
+  brand            String?
+  modelCode        String?
+  source           String?
+  tags             String[]
+  accessLevel      AccessLevel       @default(ADVANCED)
+  status           RagDocumentStatus @default(UPLOADED)
+  errorMessage     String?
+  totalChunks      Int               @default(0)
+  totalCharacters  Int               @default(0)
+  totalTokens      Int               @default(0)
+  version          Int               @default(1)
+  isActive         Boolean           @default(true)
+  uploadedById     Int?
+  parsedAt         DateTime?
+  indexedAt        DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime
+  rag_chunks       rag_chunks[]
+  users            User?             @relation(fields: [uploadedById], references: [id])
+
+  @@index([accessLevel])
+  @@index([brand])
+  @@index([category])
+  @@index([checksum])
+  @@index([isActive])
+  @@index([kind])
+  @@index([status])
+  @@index([uploadedById])
 }
 
 enum UserRole {
@@ -249,3 +343,37 @@ enum SessionType {
   AI_DIAGNOSIS
   DIRECT_BOOKING
 }
+
+enum RagDocumentKind {
+  TROUBLESHOOTING_GUIDE
+  REPAIR_POLICY
+  PRICE_TABLE
+  DEVICE_MANUAL
+  FAQ
+  INTERNAL_NOTE
+}
+
+enum RagDocumentStatus {
+  UPLOADED
+  PARSING
+  CHUNKING
+  EMBEDDING
+  READY
+  FAILED
+  ARCHIVED
+}
+
+enum RagFileType {
+  PDF
+  DOCX
+  XLSX
+  XLS
+  CSV
+  TXT
+  MD
+  HTML
+  JSON
+  UNKNOWN
+}
+
+
