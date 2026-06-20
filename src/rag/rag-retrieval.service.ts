@@ -16,7 +16,9 @@ type RetrievalRow = {
   id: number;
   chunkId: number;
   documentId: number;
+  documentTitle: string;
   title: string | null;
+  section: string | null;
   content: string;
   category: string | null;
   brand: string | null;
@@ -99,7 +101,9 @@ export class RagRetrievalService {
           c."id" AS "id",
           c."id" AS "chunkId",
           c."documentId" AS "documentId",
+          d."title" AS "documentTitle",
           COALESCE(c."title", d."title") AS "title",
+          c."section" AS "section",
           c."content" AS "content",
           COALESCE(c."category", d."category") AS "category",
           COALESCE(c."brand", d."brand") AS "brand",

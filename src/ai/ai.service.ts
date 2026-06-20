@@ -224,6 +224,21 @@ export class AiService {
         where: { userId },
         select: { category: true, brandName: true, modelCode: true },
       });
+      const sessionContext = sessionId
+        ? await this.prisma.chatSession.findUnique({
+            where: { id: sessionId },
+            select: {
+              deviceType: true,
+              device: {
+                select: {
+                  category: true,
+                  brandName: true,
+                  modelCode: true,
+                },
+              },
+            },
+          })
+        : null;
 
       let deviceContext = '';
       if (devices.length > 0) {
@@ -240,16 +255,38 @@ export class AiService {
       let ragContext = '';
       let retrievedChunks: any[] = [];
       try {
-        const primaryDevice = devices.length === 1 ? devices[0] : null;
-        const ragRes = await this.ragRetrievalService.findRelevantChunks({
+        const fallbackDevice = devices.length === 1 ? devices[0] : null;
+        const primaryDevice = sessionContext?.device || fallbackDevice;
+        const categoryFilter =
+          sessionContext?.deviceType ||
+          primaryDevice?.category ||
+          prevState?.deviceCategory ||
+          prevState?.device ||
+          null;
+        const brandFilter = primaryDevice?.brandName || null;
+        const modelCodeFilter = primaryDevice?.modelCode || null;
+
+        let ragRes = await this.ragRetrievalService.findRelevantChunks({
           query: message,
           accessLevel,
           limit: 3,
-          category: primaryDevice?.category || null,
-          brand: primaryDevice?.brandName || null,
-          modelCode: primaryDevice?.modelCode || null,
+          category: categoryFilter,
+          brand: brandFilter,
+          modelCode: modelCodeFilter,
         });
         let results = ragRes.results as any[];
+
+        if (
+          results.length === 0 &&
+          (categoryFilter || brandFilter || modelCodeFilter)
+        ) {
+          ragRes = await this.ragRetrievalService.findRelevantChunks({
+            query: message,
+            accessLevel,
+            limit: 3,
+          });
+          results = ragRes.results as any[];
+        }
 
         const errorCodesMatch = message.match(/\b[A-Z][0-9]\b|\b[A-Z]{2,3}[0-9]?\b/g); 
         if (errorCodesMatch && errorCodesMatch.length > 0) {
@@ -265,7 +302,20 @@ export class AiService {
         retrievedChunks = results;
 
         if (results && results.length > 0) {
-          const docsText = results.map((d: any) => `- [${d.title}] (Nguồn: ${d.source || 'Tài liệu nội bộ'}): ${d.content}`).join('\n\n');
+          const docsText = results
+            .map((d: any) => {
+              const title = d.documentTitle || d.title || 'Tai lieu RAG';
+              const source = d.source || 'Tai lieu noi bo';
+              const category = d.category ? `\nLoai thiet bi: ${d.category}` : '';
+              const brandModel = [d.brand, d.modelCode].filter(Boolean).join(' / ');
+              const brandModelLine = brandModel
+                ? `\nThuong hieu/Model: ${brandModel}`
+                : '';
+              const sectionLine = d.section ? `\nMuc: ${d.section}` : '';
+
+              return `- Tai lieu: ${title}\nNguon: ${source}${category}${brandModelLine}${sectionLine}\nNoi dung chunk: ${d.content}`;
+            })
+            .join('\n\n');
           ragContext = `
 [KIẾN THỨC TỪ HỆ THỐNG]:
 ${docsText}
