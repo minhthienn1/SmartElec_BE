@@ -23,6 +23,7 @@ import { RagChunkingService } from './rag-chunking.service';
 import { RagEmbeddingService } from './rag-embedding.service';
 import { buildChunkEmbeddingText } from './rag-embedding-text.util';
 import { RagFileParserService } from './rag-file-parser.service';
+import { normalizeRagFilename } from './rag-filename.util';
 import { RagTextCleanerService } from './rag-text-cleaner.service';
 
 type ImportedDocumentResult = {
@@ -52,6 +53,22 @@ type ParsedSegment = {
   metadata?: Record<string, unknown>;
 };
 
+type ChunkDraft = {
+  title: string;
+  section: string | null;
+  content: string;
+  charCount: number;
+  metadata?: Record<string, unknown>;
+};
+
+type ChunkPayload = ChunkDraft & {
+  chunkIndex: number;
+  tokenCount: number;
+  embedding: string;
+};
+
+type PrismaRawExecutor = Pick<Prisma.TransactionClient, '$executeRaw'>;
+
 @Injectable()
 export class RagIngestionService {
   private readonly logger = new Logger(RagIngestionService.name);
@@ -63,7 +80,7 @@ export class RagIngestionService {
     private readonly ragTextCleanerService: RagTextCleanerService,
     private readonly ragChunkingService: RagChunkingService,
     private readonly ragEmbeddingService: RagEmbeddingService,
-  ) {}
+  ) { }
 
   private buildChunkTitle(
     baseTitle: string,
@@ -74,7 +91,7 @@ export class RagIngestionService {
       return baseTitle;
     }
 
-    return `${baseTitle} - Phan ${chunkIndex + 1}`;
+    return `${baseTitle} - Phần ${chunkIndex + 1}`;
   }
 
   private estimateTokenCount(content: string) {
@@ -82,11 +99,11 @@ export class RagIngestionService {
   }
 
   private async updateChunkEmbedding(
-    tx: Prisma.TransactionClient,
+    client: PrismaRawExecutor,
     chunkId: number,
     embedding: string,
   ) {
-    await tx.$executeRaw`
+    await client.$executeRaw`
       UPDATE "rag_chunks"
       SET "embedding" = CAST(${embedding} AS vector), "updatedAt" = now()
       WHERE "id" = ${chunkId}
@@ -133,28 +150,64 @@ export class RagIngestionService {
     };
   }
 
-  private async markFailed(documentId: number, error: unknown) {
+  private getErrorMessage(error: unknown) {
     const responseMessage =
       error instanceof HttpException ? error.getResponse() : null;
-    const message =
-      typeof responseMessage === 'string'
-        ? responseMessage
-        : typeof responseMessage === 'object' &&
-            responseMessage &&
-            'message' in responseMessage &&
-            typeof responseMessage.message === 'string'
-          ? responseMessage.message
-          : error instanceof Error
-            ? error.message
-            : 'Khong the import tai lieu';
 
+    if (typeof responseMessage === 'string') {
+      return responseMessage;
+    }
+
+    if (
+      typeof responseMessage === 'object' &&
+      responseMessage &&
+      'message' in responseMessage
+    ) {
+      const message = responseMessage.message;
+
+      if (typeof message === 'string') {
+        return message;
+      }
+
+      if (Array.isArray(message)) {
+        return message.join(', ');
+      }
+    }
+
+    if (error instanceof Error) {
+      return error.message;
+    }
+
+    return 'Không thể import tài liệu RAG từ file.';
+  }
+
+  private async cleanupChunks(documentId: number) {
+    await this.prisma.ragChunk.deleteMany({
+      where: { documentId },
+    });
+  }
+
+  private async markFailed(documentId: number, error: unknown) {
     await this.prisma.ragDocument.update({
       where: { id: documentId },
       data: {
         status: RagDocumentStatus.FAILED,
-        errorMessage: message,
+        errorMessage: this.getErrorMessage(error),
+        indexedAt: null,
       },
     });
+  }
+
+  private async cleanupFailedImport(documentId: number, error: unknown) {
+    try {
+      await this.cleanupChunks(documentId);
+      await this.markFailed(documentId, error);
+    } catch (cleanupError) {
+      this.logger.error(
+        `Không thể cleanup tài liệu RAG lỗi documentId=${documentId}`,
+        cleanupError,
+      );
+    }
   }
 
   private buildSegments(
@@ -162,14 +215,8 @@ export class RagIngestionService {
     content: string,
     parserMetadata?: Record<string, unknown>,
     parsedSegments?: ParsedSegment[],
-  ) {
-    const normalizedSegments = (segments: Array<{
-      title: string;
-      section: string | null;
-      content: string;
-      charCount: number;
-      metadata?: Record<string, unknown>;
-    }>) =>
+  ): ChunkDraft[] {
+    const normalizedSegments = (segments: ChunkDraft[]) =>
       segments.filter(
         (segment) =>
           segment.charCount >= RAG_LIMITS.MIN_CHUNK_CHARS ||
@@ -235,7 +282,7 @@ export class RagIngestionService {
 
     if (existing) {
       throw new ConflictException({
-        message: 'File nay da ton tai trong kho tri thuc RAG.',
+        message: 'File đã tồn tại trong kho tri thức RAG.',
         existingDocumentId: existing.id,
         existingStatus: existing.status,
       });
@@ -244,13 +291,7 @@ export class RagIngestionService {
 
   private async buildChunkPayloads(
     documentId: number,
-    chunks: Array<{
-      title: string;
-      section: string | null;
-      content: string;
-      charCount: number;
-      metadata?: Record<string, unknown>;
-    }>,
+    chunks: ChunkDraft[],
     context: {
       baseTitle: string;
       category: string | null;
@@ -259,7 +300,7 @@ export class RagIngestionService {
       source: string | null;
       accessLevel: AccessLevel;
     },
-  ) {
+  ): Promise<ChunkPayload[]> {
     return mapWithConcurrency(
       chunks,
       RAG_LIMITS.EMBEDDING_BATCH_CONCURRENCY,
@@ -294,15 +335,113 @@ export class RagIngestionService {
           };
         } catch (error) {
           this.logger.error(
-            `Loi embedding chunk documentId=${documentId} chunkIndex=${index}`,
+            `Lỗi embedding chunk documentId=${documentId} chunkIndex=${index}`,
             error,
           );
+
+          if (error instanceof HttpException) {
+            throw error;
+          }
+
           throw new BadRequestException(
-            `Khong the tao embedding cho chunk ${index + 1} cua tai lieu.`,
+            `Không thể tạo embedding cho chunk ${index + 1} của tài liệu.`,
           );
         }
       },
     );
+  }
+
+  private async saveChunksAndMarkReady(params: {
+    documentId: number;
+    chunkPayloads: ChunkPayload[];
+    cleanedText: string;
+    totalTokens: number;
+    category: string | null;
+    brand: string | null;
+    modelCode: string | null;
+    tags: string[];
+    accessLevel: AccessLevel;
+    originalFileName: string;
+  }) {
+    const {
+      documentId,
+      chunkPayloads,
+      cleanedText,
+      totalTokens,
+      category,
+      brand,
+      modelCode,
+      tags,
+      accessLevel,
+      originalFileName,
+    } = params;
+
+    /*
+      Không dùng this.prisma.$transaction lớn ở đây.
+
+      Lý do:
+      - File dài có thể tạo hàng chục chunk.
+      - Mỗi chunk cần 1 query create + 1 raw SQL update vector.
+      - Interactive transaction mặc định của Prisma timeout 5000ms.
+      - Khi quá 5s sẽ lỗi P2028 Transaction already closed.
+
+      Nếu có lỗi giữa chừng, catch ngoài sẽ:
+      - xóa chunks đã tạo dở
+      - đổi document sang FAILED
+      - giữ nguyên HttpException như 429 nếu lỗi gốc là quota Gemini
+    */
+    for (const chunk of chunkPayloads) {
+      const createdChunk = await this.prisma.ragChunk.create({
+        data: {
+          documentId,
+          chunkIndex: chunk.chunkIndex,
+          title: chunk.title,
+          section: chunk.section,
+          content: chunk.content,
+          category,
+          brand,
+          modelCode,
+          tags,
+          accessLevel,
+          charCount: chunk.charCount,
+          tokenCount: chunk.tokenCount,
+          metadata: chunk.metadata
+            ? {
+              ...chunk.metadata,
+              originalFileName,
+            }
+            : {
+              originalFileName,
+            },
+        },
+      });
+
+      await this.updateChunkEmbedding(
+        this.prisma,
+        createdChunk.id,
+        chunk.embedding,
+      );
+    }
+
+    return this.prisma.ragDocument.update({
+      where: { id: documentId },
+      data: {
+        status: RagDocumentStatus.READY,
+        totalChunks: chunkPayloads.length,
+        totalCharacters: cleanedText.length,
+        totalTokens,
+        indexedAt: new Date(),
+        parsedAt: new Date(),
+        errorMessage: null,
+      },
+      include: {
+        chunks: {
+          orderBy: { chunkIndex: 'asc' },
+          take: 1,
+          select: { content: true },
+        },
+      },
+    });
   }
 
   async importFile(
@@ -311,13 +450,27 @@ export class RagIngestionService {
     uploadedById?: number,
   ) {
     if (!file) {
-      throw new BadRequestException('Khong tim thay file de import');
+      throw new BadRequestException('Không tìm thấy file để import');
     }
+
+    const originalFileName = normalizeRagFilename(file.originalname);
+
+    /*
+      Gán lại để các service phía sau như upload/parser dùng tên file đã normalize.
+      Nếu terminal Windows vẫn hiện sai chữ "thành công" thì đó là encoding terminal,
+      không phải filename trong DB.
+    */
+    file.originalname = originalFileName;
 
     const checksum = createHash('sha256').update(file.buffer).digest('hex');
     const fileType = this.ragFileParserService.inferFileType(file);
+
     await this.ensureNoActiveDuplicate(checksum);
-    const storedFileName = `${Date.now()}-${checksum.slice(0, 12)}${extname(file.originalname).toLowerCase()}`;
+
+    const storedFileName = `${Date.now()}-${checksum.slice(0, 12)}${extname(
+      originalFileName,
+    ).toLowerCase()}`;
+
     const uploadResult = await this.uploadService.uploadFileWithMetadata(
       file,
       'rag-knowledge',
@@ -325,7 +478,7 @@ export class RagIngestionService {
     );
 
     const baseTitle =
-      dto.title?.trim() || file.originalname.replace(/\.[^.]+$/, '');
+      dto.title?.trim() || originalFileName.replace(/\.[^.]+$/, '');
     const accessLevel = dto.accessLevel ?? AccessLevel.ADVANCED;
     const category = dto.category?.trim() || null;
     const brand = dto.brand?.trim() || null;
@@ -339,7 +492,7 @@ export class RagIngestionService {
         data: {
           title: baseTitle,
           description: dto.description?.trim() || null,
-          originalFileName: file.originalname,
+          originalFileName,
           storedFileName: uploadResult.storedFileName,
           fileUrl: uploadResult.url,
           storageKey: uploadResult.storageKey,
@@ -358,6 +511,7 @@ export class RagIngestionService {
           uploadedById,
         },
       });
+
       documentId = createdDocument.id;
 
       await this.prisma.ragDocument.update({
@@ -370,17 +524,22 @@ export class RagIngestionService {
 
       const parsed = await this.ragFileParserService.parse(file);
       const cleanedText = this.ragTextCleanerService.clean(parsed.content);
+
       if (!cleanedText) {
-        throw new BadRequestException('File khong co noi dung hop le sau khi lam sach');
-      }
-      if (cleanedText.length < RAG_LIMITS.MIN_CHUNK_CHARS) {
         throw new BadRequestException(
-          'Noi dung tai lieu qua ngan sau khi parse, khong du de tao chunk co nghia.',
+          'File không có nội dung hợp lệ sau khi làm sạch.',
         );
       }
+
+      if (cleanedText.length < RAG_LIMITS.MIN_CHUNK_CHARS) {
+        throw new BadRequestException(
+          'Nội dung tài liệu quá ngắn sau khi parse, không đủ để tạo chunk có nghĩa.',
+        );
+      }
+
       if (cleanedText.length > RAG_LIMITS.MAX_PARSED_TEXT_CHARS) {
         throw new BadRequestException(
-          'Tai lieu qua lon sau khi parse, vui long chia nho file theo chuong hoac chu de.',
+          'Tài liệu quá lớn sau khi parse, vui lòng chia nhỏ file theo chương hoặc chủ đề.',
         );
       }
 
@@ -390,12 +549,16 @@ export class RagIngestionService {
         parsed.metadata,
         parsed.segments,
       );
+
       if (chunkDrafts.length === 0) {
-        throw new BadRequestException('Khong the tach noi dung thanh chunk');
+        throw new BadRequestException(
+          'Không thể tách nội dung thành chunk.',
+        );
       }
+
       if (chunkDrafts.length > RAG_LIMITS.MAX_CHUNKS_PER_DOCUMENT) {
         throw new BadRequestException(
-          'Tai lieu tao ra qua nhieu chunk, vui long chia nho file.',
+          'Tài liệu tạo ra quá nhiều chunk, vui lòng chia nhỏ file.',
         );
       }
 
@@ -414,90 +577,58 @@ export class RagIngestionService {
         },
       });
 
-      const chunkPayloads = await this.buildChunkPayloads(documentId, chunkDrafts, {
-        baseTitle,
-        category,
-        brand,
-        modelCode,
-        source,
-        accessLevel,
-      });
+      const chunkPayloads = await this.buildChunkPayloads(
+        documentId,
+        chunkDrafts,
+        {
+          baseTitle,
+          category,
+          brand,
+          modelCode,
+          source,
+          accessLevel,
+        },
+      );
 
       const totalTokens = chunkPayloads.reduce(
         (sum, chunk) => sum + chunk.tokenCount,
         0,
       );
 
-      const document = await this.prisma.$transaction(async (tx) => {
-        for (const chunk of chunkPayloads) {
-          const createdChunk = await tx.ragChunk.create({
-            data: {
-              documentId: documentId!,
-              chunkIndex: chunk.chunkIndex,
-              title: chunk.title,
-              section: chunk.section,
-              content: chunk.content,
-              category,
-              brand,
-              modelCode,
-              tags,
-              accessLevel,
-              charCount: chunk.charCount,
-              tokenCount: chunk.tokenCount,
-              metadata: chunk.metadata
-                ? {
-                    ...chunk.metadata,
-                    originalFileName: file.originalname,
-                  }
-                : {
-                    originalFileName: file.originalname,
-                  },
-            },
-          });
-
-          await this.updateChunkEmbedding(tx, createdChunk.id, chunk.embedding);
-        }
-
-        return tx.ragDocument.update({
-          where: { id: documentId! },
-          data: {
-            status: RagDocumentStatus.READY,
-            totalChunks: chunkPayloads.length,
-            totalCharacters: cleanedText.length,
-            totalTokens,
-            indexedAt: new Date(),
-            parsedAt: new Date(),
-            errorMessage: null,
-          },
-          include: {
-            chunks: {
-              orderBy: { chunkIndex: 'asc' },
-              take: 1,
-              select: { content: true },
-            },
-          },
-        });
+      const document = await this.saveChunksAndMarkReady({
+        documentId,
+        chunkPayloads,
+        cleanedText,
+        totalTokens,
+        category,
+        brand,
+        modelCode,
+        tags,
+        accessLevel,
+        originalFileName,
       });
 
       return {
-        message: 'Tai lieu da duoc import, chunk va vector hoa thanh cong',
+        message: 'Tài liệu đã được import, chunk và vector hóa thành công.',
         document: this.mapImportedDocument(document),
       };
     } catch (error) {
       if (documentId) {
-        await this.markFailed(documentId, error);
+        await this.cleanupFailedImport(documentId, error);
       }
 
       this.logger.error(
-        `Loi khi import tai lieu RAG tu file ${file.originalname} (documentId=${documentId ?? 'n/a'})`,
+        `Lỗi khi import tài liệu RAG từ file ${originalFileName} (documentId=${documentId ?? 'n/a'
+        })`,
         error,
       );
+
       if (error instanceof HttpException) {
         throw error;
       }
 
       throw new HttpException(
-        'Khong the import tai lieu RAG tu file',
+        'Không thể import tài liệu RAG từ file.',
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }

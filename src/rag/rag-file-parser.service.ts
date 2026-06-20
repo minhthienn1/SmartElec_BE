@@ -5,6 +5,7 @@ import * as XLSX from 'xlsx';
 import mammoth from 'mammoth';
 import { PDFParse } from 'pdf-parse';
 import { RAG_IMPORT_UNSUPPORTED_FILE_MESSAGE } from './rag.constants';
+import { normalizeRagFilename } from './rag-filename.util';
 
 type ParsedRagSegment = {
   title?: string;
@@ -200,6 +201,7 @@ export class RagFileParserService {
   }
 
   private parseCsv(file: Express.Multer.File): ParsedRagFile {
+    const originalFileName = normalizeRagFilename(file.originalname);
     const rawText = file.buffer.toString('utf-8').replace(/^\uFEFF/, '');
     const lines = rawText
       .split(/\r?\n/)
@@ -212,7 +214,7 @@ export class RagFileParserService {
 
     const headers = lines[0].split(',').map((header) => header.trim());
     const dataLines = lines.slice(1);
-    const csvLabel = `CSV: ${file.originalname.replace(/\.[^.]+$/, '')}`;
+    const csvLabel = `CSV: ${originalFileName.replace(/\.[^.]+$/, '')}`;
     const segments = dataLines
       .map((line, index) => {
         const values = line.split(',').map((value) => value.trim());
@@ -267,10 +269,11 @@ export class RagFileParserService {
   }
 
   private async parseDocx(file: Express.Multer.File): Promise<ParsedRagFile> {
+    const originalFileName = normalizeRagFilename(file.originalname);
     const result = await mammoth.extractRawText({ buffer: file.buffer });
     if (result.messages.length > 0) {
       this.logger.warn(
-        `DOCX parser warnings for ${file.originalname}: ${result.messages
+        `DOCX parser warnings for ${originalFileName}: ${result.messages
           .map((message) => message.message)
           .join(' | ')}`,
       );
@@ -394,6 +397,7 @@ export class RagFileParserService {
   }
 
   private async parsePdf(file: Express.Multer.File): Promise<ParsedRagFile> {
+    const originalFileName = normalizeRagFilename(file.originalname);
     const parser = new PDFParse({ data: file.buffer });
     const result = await parser.getText();
     const content = this.ensureText(
@@ -401,7 +405,7 @@ export class RagFileParserService {
       'PDF nay khong co lop text hoac can OCR, hien he thong chua ho tro OCR.',
     );
     this.logger.log(
-      `Parsed PDF text for ${file.originalname} with ${result.total} page(s)`,
+      `Đã tách văn bản PDF cho ${originalFileName} với ${result.total} trang`,
     );
 
     return {

@@ -206,6 +206,9 @@ export class RagService {
             `Loi embedding khi reindex documentId=${document.id} chunkIndex=${index}`,
             error,
           );
+          if (error instanceof HttpException) {
+            throw error;
+          }
           throw new BadRequestException(
             `Khong the tao embedding cho chunk ${index + 1} khi reindex tai lieu.`,
           );
@@ -284,6 +287,9 @@ export class RagService {
         document: this.mapDocumentForAdmin(document),
       };
     } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
       this.logger.error('Lỗi khi lưu tài liệu RAG mới vào database:', error);
       throw new HttpException(
         'Không thể lưu tài liệu vào database',
@@ -770,6 +776,9 @@ export class RagService {
         document: this.mapDocumentForAdmin(document),
       };
     } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
       this.logger.error('Lỗi khi cập nhật tài liệu RAG mới trong database:', error);
       throw new HttpException(
         'Không thể cập nhật tài liệu trong database',

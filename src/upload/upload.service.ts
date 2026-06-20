@@ -56,10 +56,10 @@ export class UploadService {
       // Ghép URL công khai hoàn chỉnh
       const publicFileUrl = `${this.publicUrl}/${key}`;
 
-      console.log(`☁️ [R2] Upload thành công: ${publicFileUrl}`);
+      console.log(`[R2] Upload thành công: ${publicFileUrl}`);
       return publicFileUrl;
     } catch (error : any) {
-      console.error(`❌ [R2] Upload thất bại:`, error.message);
+      console.error(`[R2] Upload thất bại:`, error.message);
       throw new InternalServerErrorException(
         'Không thể upload file: ' + error.message,
       );
@@ -86,16 +86,16 @@ export class UploadService {
 
       const publicFileUrl = `${this.publicUrl}/${key}`;
 
-      console.log(`â˜ï¸ [R2] Upload thÃ nh cÃ´ng: ${publicFileUrl}`);
+      console.log(`[R2] Upload thành công: ${publicFileUrl}`);
       return {
         url: publicFileUrl,
         storageKey: key,
         storedFileName,
       };
     } catch (error : any) {
-      console.error(`âŒ [R2] Upload tháº¥t báº¡i:`, error.message);
+      console.error(`[R2] Upload thất bại:`, error.message);
       throw new InternalServerErrorException(
-        'KhÃ´ng thá»ƒ upload file: ' + error.message,
+        'Không thể upload file: ' + error.message,
       );
     }
   }
