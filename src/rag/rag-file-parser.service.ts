@@ -1,9 +1,10 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { RagFileType } from '@prisma/client';
 import { extname } from 'path';
 import * as XLSX from 'xlsx';
 import mammoth from 'mammoth';
 import { PDFParse } from 'pdf-parse';
+import { RAG_IMPORT_UNSUPPORTED_FILE_MESSAGE } from './rag.constants';
 
 type ParsedRagSegment = {
   title?: string;
@@ -21,6 +22,8 @@ type ParsedRagFile = {
 
 @Injectable()
 export class RagFileParserService {
+  private readonly logger = new Logger(RagFileParserService.name);
+
   inferFileType(file: Express.Multer.File): RagFileType {
     const extension = extname(file.originalname).toLowerCase();
     const mimeType = file.mimetype.toLowerCase();
@@ -62,9 +65,7 @@ export class RagFileParserService {
       return RagFileType.PDF;
     }
 
-    throw new BadRequestException(
-      'Chi ho tro file TXT, MD, CSV, DOCX, XLSX hoac PDF text.',
-    );
+    throw new BadRequestException(RAG_IMPORT_UNSUPPORTED_FILE_MESSAGE);
   }
 
   private ensureText(
@@ -78,6 +79,38 @@ export class RagFileParserService {
     }
 
     return normalized;
+  }
+
+  private detectHeaderRow(rows: string[][]): boolean {
+    const firstRow = rows[0];
+    const secondRow = rows[1];
+
+    if (!firstRow || firstRow.length === 0) {
+      return false;
+    }
+
+    const normalized = firstRow
+      .map((cell) => cell.trim().toLowerCase())
+      .filter((cell) => cell.length > 0);
+
+    if (normalized.length === 0) {
+      return false;
+    }
+
+    const uniqueCount = new Set(normalized).size;
+    const isMostlyUnique = uniqueCount >= Math.max(1, normalized.length - 1);
+    const hasNonNumericLabel = normalized.some((cell) => Number.isNaN(Number(cell)));
+
+    if (!secondRow) {
+      return isMostlyUnique && hasNonNumericLabel;
+    }
+
+    const firstRowLongerCells = normalized.filter((cell, index) => {
+      const nextValue = secondRow[index]?.trim() ?? '';
+      return cell.length > 0 && cell.length <= 60 && nextValue !== cell;
+    }).length;
+
+    return isMostlyUnique && hasNonNumericLabel && firstRowLongerCells > 0;
   }
 
   private parseTxt(file: Express.Multer.File): ParsedRagFile {
@@ -235,9 +268,16 @@ export class RagFileParserService {
 
   private async parseDocx(file: Express.Multer.File): Promise<ParsedRagFile> {
     const result = await mammoth.extractRawText({ buffer: file.buffer });
+    if (result.messages.length > 0) {
+      this.logger.warn(
+        `DOCX parser warnings for ${file.originalname}: ${result.messages
+          .map((message) => message.message)
+          .join(' | ')}`,
+      );
+    }
     const content = this.ensureText(
       result.value.replace(/\r\n/g, '\n'),
-      'File DOCX khong co noi dung text hop le de import',
+      'File DOCX khong co noi dung text hop le.',
     );
 
     return {
@@ -296,8 +336,11 @@ export class RagFileParserService {
       }
 
       sheetNames.push(sheetName);
-      const headerRow = rows[0];
-      const dataRows = rows.length > 1 ? rows.slice(1) : rows;
+      const hasHeaderRow = this.detectHeaderRow(rows);
+      const headerRow = hasHeaderRow
+        ? rows[0]
+        : rows[0].map((_, columnIndex) => `Cot ${columnIndex + 1}`);
+      const dataRows = hasHeaderRow ? rows.slice(1) : rows;
 
       dataRows.forEach((row, index) => {
         const pairs = row
@@ -316,14 +359,17 @@ export class RagFileParserService {
         }
 
         totalRows += 1;
+        const rowIndex = index + (hasHeaderRow ? 2 : 1);
         segments.push({
-          title: `Sheet: ${sheetName} - Dong ${index + 2}`,
+          title: `Sheet: ${sheetName} - Dong ${rowIndex}`,
           section: `Sheet: ${sheetName}`,
-          content: `Sheet: ${sheetName}\nDong ${index + 2}:\n${pairs.join('\n')}`,
+          content: `Sheet: ${sheetName}\nDong ${rowIndex}:\n${pairs.join('\n')}`,
           metadata: {
             parser: 'xlsx',
             sheetName,
-            rowIndex: index + 2,
+            headers: headerRow,
+            rowIndex,
+            rowRange: `${rowIndex}-${rowIndex}`,
           },
         });
       });
@@ -331,7 +377,7 @@ export class RagFileParserService {
 
     if (segments.length === 0) {
       throw new BadRequestException(
-        'File XLSX khong co noi dung text hop le de import',
+        'File XLSX khong co du lieu text hop le.',
       );
     }
 
@@ -352,7 +398,10 @@ export class RagFileParserService {
     const result = await parser.getText();
     const content = this.ensureText(
       result.text.replace(/\r\n/g, '\n'),
-      'PDF nay khong co lop text hoac can OCR, hien chua ho tro OCR.',
+      'PDF nay khong co lop text hoac can OCR, hien he thong chua ho tro OCR.',
+    );
+    this.logger.log(
+      `Parsed PDF text for ${file.originalname} with ${result.total} page(s)`,
     );
 
     return {
@@ -382,9 +431,7 @@ export class RagFileParserService {
       case RagFileType.PDF:
         return this.parsePdf(file);
       default:
-        throw new BadRequestException(
-          'Chi ho tro file TXT, MD, CSV, DOCX, XLSX hoac PDF text.',
-        );
+        throw new BadRequestException(RAG_IMPORT_UNSUPPORTED_FILE_MESSAGE);
     }
   }
 }

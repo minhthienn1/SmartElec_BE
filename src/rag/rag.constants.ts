@@ -17,3 +17,18 @@ export const ALLOWED_RAG_IMPORT_EXTENSIONS = new Set([
   '.xlsx',
   '.pdf',
 ]);
+
+export const ALLOWED_RAG_IMPORT_MIME_TYPES = new Set([
+  'text/plain',
+  'text/markdown',
+  'text/csv',
+  'application/csv',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/pdf',
+  'application/octet-stream',
+]);
+
+export const RAG_IMPORT_UNSUPPORTED_FILE_MESSAGE =
+  'Chi ho tro file TXT, MD, CSV, DOCX, XLSX hoac PDF co text.';

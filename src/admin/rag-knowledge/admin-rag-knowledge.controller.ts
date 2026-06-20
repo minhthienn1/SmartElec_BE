@@ -22,7 +22,9 @@ import { IngestDocumentDto } from '../../rag/dto/ingest-document.dto';
 import { ImportRagFileDto } from '../../rag/dto/import-rag-file.dto';
 import {
   ALLOWED_RAG_IMPORT_EXTENSIONS,
+  ALLOWED_RAG_IMPORT_MIME_TYPES,
   RAG_LIMITS,
+  RAG_IMPORT_UNSUPPORTED_FILE_MESSAGE,
 } from '../../rag/rag.constants';
 import { RagDocumentChunksQueryDto } from '../../rag/dto/rag-document-chunks-query.dto';
 import { AdminRagKnowledgeService } from './admin-rag-knowledge.service';
@@ -71,6 +73,23 @@ export class AdminRagKnowledgeController {
   @UseInterceptors(
     FileInterceptor('file', {
       limits: { fileSize: RAG_LIMITS.MAX_FILE_SIZE_BYTES },
+      fileFilter: (_req, file, callback) => {
+        const extension = extname(file.originalname).toLowerCase();
+        const mimeType = file.mimetype.toLowerCase();
+
+        if (
+          ALLOWED_RAG_IMPORT_EXTENSIONS.has(extension) &&
+          ALLOWED_RAG_IMPORT_MIME_TYPES.has(mimeType)
+        ) {
+          callback(null, true);
+          return;
+        }
+
+        callback(
+          new BadRequestException(RAG_IMPORT_UNSUPPORTED_FILE_MESSAGE),
+          false,
+        );
+      },
     }),
   )
   importDocument(
@@ -88,9 +107,7 @@ export class AdminRagKnowledgeController {
 
     const extension = extname(file.originalname).toLowerCase();
     if (!ALLOWED_RAG_IMPORT_EXTENSIONS.has(extension)) {
-      throw new BadRequestException(
-        'Chi ho tro file TXT, MD, CSV, DOCX, XLSX hoac PDF text.',
-      );
+      throw new BadRequestException(RAG_IMPORT_UNSUPPORTED_FILE_MESSAGE);
     }
 
     const uploadedById = Number(
