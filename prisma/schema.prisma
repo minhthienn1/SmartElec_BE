@@ -44,6 +44,11 @@ enum MessageType {
   QUOTE_RESPONSE
 }
 
+enum SessionType {
+  AI_DIAGNOSIS
+  DIRECT_BOOKING
+}
+
 enum QuoteStatus {
   PENDING // Chờ khách duyệt
   ACCEPTED // Khách đồng ý
@@ -60,11 +65,6 @@ enum AssignmentAction {
   SYSTEM_AUTO_CANCEL // Hệ thống tự hủy sau 30 phút
 }
 
-enum SessionType {
-  AI_DIAGNOSIS
-  DIRECT_BOOKING
-}
-
 // ======================================================================
 // 2. BẢNG NGƯỜI DÙNG & THIẾT BỊ
 // ======================================================================
@@ -76,13 +76,13 @@ enum AccessLevel {
 }
 
 enum RagDocumentStatus {
-  UPLOADED
-  PARSING
-  CHUNKING
-  EMBEDDING
-  READY
-  FAILED
-  ARCHIVED
+  UPLOADED // Đã tải lên, chờ hệ thống xử lý
+  PARSING // Đang phân tích và trích xuất nội dung từ file
+  CHUNKING // Đang chia nội dung thành các đoạn nhỏ
+  EMBEDDING // Đang tạo vector embedding cho từng chunk
+  READY // Đã xử lý xong, sẵn sàng dùng để truy xuất RAG
+  FAILED // Xử lý thất bại, cần xem errorMessage
+  ARCHIVED // Đã lưu trữ/ẩn, không còn dùng trong truy xuất mặc định
 }
 
 enum RagFileType {
@@ -99,12 +99,12 @@ enum RagFileType {
 }
 
 enum RagDocumentKind {
-  TROUBLESHOOTING_GUIDE
-  REPAIR_POLICY
-  PRICE_TABLE
-  DEVICE_MANUAL
-  FAQ
-  INTERNAL_NOTE
+  TROUBLESHOOTING_GUIDE // Hướng dẫn xử lý lỗi
+  REPAIR_POLICY // Chính sách sửa chữa
+  PRICE_TABLE // Bảng giá
+  DEVICE_MANUAL // Hướng dẫn thiết bị
+  FAQ // Câu hỏi thường gặp
+  INTERNAL_NOTE // Ghi chú nội bộ
 }
 
 model User {
