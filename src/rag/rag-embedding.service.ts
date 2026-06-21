@@ -45,6 +45,18 @@ export class RagEmbeddingService {
   }
 
   private isGeminiQuotaError(error: unknown) {
+    if (typeof error === 'string') {
+      const message = error.toLowerCase();
+
+      return (
+        message.includes('429') ||
+        message.includes('too many requests') ||
+        message.includes('quota') ||
+        message.includes('rate limit') ||
+        message.includes('rate-limits')
+      );
+    }
+
     if (!error || typeof error !== 'object') {
       return false;
     }
@@ -72,9 +84,7 @@ export class RagEmbeddingService {
   private async waitForNextEmbeddingSlot() {
     const waitMs = Math.max(
       0,
-      this.lastEmbeddingAt +
-      RAG_LIMITS.EMBEDDING_MIN_INTERVAL_MS -
-      Date.now(),
+      this.lastEmbeddingAt + RAG_LIMITS.EMBEDDING_MIN_INTERVAL_MS - Date.now(),
     );
 
     if (waitMs > 0) {
@@ -105,14 +115,15 @@ export class RagEmbeddingService {
 
           const result = await this.embeddingModel.embedContent({
             content: { parts: [{ text }], role: 'user' },
-            // @ts-ignore SDK cu co the chua khai bao field nay nhung API van ho tro.
+            // @ts-ignore SDK cũ có thể chưa khai báo field này nhưng API vẫn hỗ trợ.
             outputDimensionality: 768,
           });
 
           const values = result.embedding?.values;
 
           if (!Array.isArray(values) || values.length === 0) {
-            this.logger.error('Gemini tra ve embedding rong');
+            this.logger.error('Gemini trả về embedding rỗng');
+
             throw new InternalServerErrorException(
               'Gemini không trả về vector embedding hợp lệ',
             );
@@ -128,8 +139,7 @@ export class RagEmbeddingService {
             const retryDelay = retryDelays[attempt];
 
             this.logger.warn(
-              `Gemini embedding bi gioi han quota/rate limit o lan thu ${attempt + 1
-              }.`,
+              `Gemini embedding bị giới hạn quota/rate limit ở lần thử ${attempt + 1}.`,
             );
 
             if (retryDelay !== undefined) {
@@ -140,7 +150,7 @@ export class RagEmbeddingService {
             throw this.createGeminiRateLimitException();
           }
 
-          this.logger.error('Loi khi tao embedding cho RAG', error);
+          this.logger.error('Lỗi khi tạo embedding cho RAG', error);
 
           throw new InternalServerErrorException(
             'Không thể tạo embedding cho dữ liệu RAG',
@@ -154,8 +164,9 @@ export class RagEmbeddingService {
 
   toPgVector(values: number[]): string {
     if (!Array.isArray(values) || values.length === 0) {
-      this.logger.error('Embedding rong, khong the chuyen sang pgvector');
-      throw new InternalServerErrorException('Embedding khong hop le');
+      this.logger.error('Embedding rỗng, không thể chuyển sang pgvector');
+
+      throw new InternalServerErrorException('Embedding không hợp lệ');
     }
 
     return `[${values.join(',')}]`;
