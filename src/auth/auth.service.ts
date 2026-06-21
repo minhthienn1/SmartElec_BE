@@ -117,6 +117,7 @@ export class AuthService {
         avatarUrl: true,
         address: true,
         gender: true,
+        needsPassword: true,
       },
     });
 

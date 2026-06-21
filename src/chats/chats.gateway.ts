@@ -22,6 +22,8 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
 
+  private messageRateLimit = new Map<number, { count: number; startTime: number }>();
+
   constructor(
     @Inject(forwardRef(() => ChatsService))
     private readonly chatsService: ChatsService,
@@ -92,10 +94,24 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     try {
       const userId = client.data.userId as number;
-      const roomName = `room_${data.sessionId}`;
 
-      // ✅ PRODUCTION FIX: Gửi tin nhắn đã lưu db ngay cho người gửi
-      // Người gửi ngay lập tức nhận được message đã có ID thật từ DB
+      // --- BẮT ĐẦU: XỬ LÝ SPAM RATE LIMIT ---
+      const now = Date.now();
+      const userLimit = this.messageRateLimit.get(userId) || { count: 0, startTime: now };
+      
+      if (now - userLimit.startTime > 1000) { 
+        userLimit.count = 1;
+        userLimit.startTime = now;
+      } else {
+        userLimit.count++;
+        if (userLimit.count > 5) {
+          client.emit('error_message', { message: 'Too Many Requests: Bạn nhắn tin quá nhanh!' });
+          return; 
+        }
+      }
+      this.messageRateLimit.set(userId, userLimit);
+      // --- KẾT THÚC: SPAM RATE LIMIT ---
+
       const savedMessage = await this.chatsService.sendMessage(
         data.sessionId,
         userId,
@@ -104,16 +120,14 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
           content: data.content,
           metadata: data.metadata,
         },
-        client.id, // ← ChatsService sẽ dùng client.id để loại trừ người gửi khi emit broadcast
+        client.id, 
       );
 
-      // Trả về confirmation cho client
       client.emit('message_delivered', {
-        tempId: data.metadata?.tempId, // Frontend gửi kèm ID tạm để match
+        tempId: data.metadata?.tempId,
         savedMessage: savedMessage,
       });
 
-      // Cập nhật inbox cho đối phương
       const session = await this.chatsService.getSessionById(data.sessionId);
       if (session) {
         const recipientId = userId === session.userId ? session.technicianId : session.userId;
@@ -126,8 +140,8 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
 
       return { event: 'message_sent', data: savedMessage };
-    } catch (error) {
-      console.error('❌ Lỗi gửi tin nhắn:', error.message);
+    } catch (error: any) {
+      console.warn(`⚠️ [WS Blocked] User ${client.data.userId}: ${error.message}`);
       client.emit('error_message', { message: error.message });
     }
   }
