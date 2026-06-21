@@ -101,31 +101,44 @@ export class ChatsService {
 
   async sendMessage(sessionId: number, senderId: number, dto: SendMessageDto, senderSocketId?: string) {
     try {
-      // Lấy thông tin session hiện tại để kiểm tra deviceType nếu cần thiết
-      const session = await this.prisma.chatSession.findUnique({
-        where: { id: sessionId },
-        select: { deviceType: true }
+      const currentDevice = dto.deviceType || null;
+
+      // 1. TRANSACTION ĐỂ XỬ LÝ RACE CONDITION
+      const message = await this.prisma.$transaction(async (tx) => {
+        const session = await tx.chatSession.findUnique({
+          where: { id: sessionId },
+          select: { status: true, deviceType: true }
+        });
+
+        if (!session) {
+          throw new NotFoundException('Không tìm thấy phiên chat này.');
+        }
+
+        if (session.status === 'BROADCASTING') {
+          throw new BadRequestException('Đang phát sóng tìm thợ, vui lòng đợi thợ nhận đơn để tiếp tục nhắn tin.');
+        }
+
+        if (session.status === 'COMPLETED' || session.status === 'CANCELLED') {
+          throw new BadRequestException('Đơn hàng đã đóng, không thể gửi thêm tin nhắn.');
+        }
+
+        return await tx.message.create({
+          data: {
+            sessionId,
+            senderId,
+            type: dto.type,
+            content: dto.content,
+            metadata: dto.metadata 
+              ? { ...dto.metadata, contextDevice: currentDevice || session.deviceType } 
+              : (currentDevice || session.deviceType ? { contextDevice: currentDevice || session.deviceType } : undefined),
+          },
+          include: {
+            sender: { select: { id: true, fullName: true, avatarUrl: true, role: true } },
+          },
+        });
       });
 
-      const currentDevice = dto.deviceType || session?.deviceType || null;
-
-      const message = await this.prisma.message.create({
-        data: {
-          sessionId,
-          senderId,
-          type: dto.type,
-          content: dto.content,
-          // Lưu deviceType vào metadata của message để dọn dẹp lịch sử chính xác hơn
-          metadata: dto.metadata 
-            ? { ...dto.metadata, contextDevice: currentDevice } 
-            : (currentDevice ? { contextDevice: currentDevice } : undefined),
-        },
-        include: {
-          sender: { select: { id: true, fullName: true, avatarUrl: true, role: true } },
-        },
-      });
-
-      // ✅ PRODUCTION: Broadcast CHỈ đến những người khác (không dội ngược người gửi)
+      // 2. BROADCAST VÀ GỬI FCM
       const roomName = `room_${sessionId}`;
       if (senderSocketId) {
         this.chatsGateway.server
@@ -136,13 +149,13 @@ export class ChatsService {
         this.chatsGateway.server.to(roomName).emit('new_message', message);
       }
 
-      // FCM Push Notification (âm thầm)
       this.triggerFCMNotification(sessionId, senderId, message).catch(err => 
         this.logger.error('❌ Lỗi gửi FCM:', err.message)
       );
 
       return message;
     } catch (error:any) {
+      if (error instanceof HttpException) throw error;
       throw new InternalServerErrorException('Lỗi khi gửi tin nhắn: ' + error.message);
     }
   }

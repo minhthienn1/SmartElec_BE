@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
 import { BullModule } from '@nestjs/bullmq';
 import { AppController } from './app.controller';
@@ -36,6 +37,15 @@ import { RagModule } from './rag/rag.module';
       },
     }),
     ScheduleModule.forRoot(),
+    ThrottlerModule.forRoot([{
+      name: 'ai_chat',
+      ttl: 3000, 
+      limit: 1,  
+    }, {
+      name: 'normal_chat',
+      ttl: 1000,
+      limit: 5,
+    }]),
     AuthModule, 
     UsersModule, 
     PrismaModule, 

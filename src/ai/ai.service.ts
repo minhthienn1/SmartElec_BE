@@ -1,4 +1,4 @@
-import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
+import { Injectable, Logger, HttpException, HttpStatus, BadRequestException } from '@nestjs/common';
 import { GoogleGenerativeAI, GenerativeModel, SchemaType } from '@google/generative-ai';
 import { PrismaService } from '../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
@@ -229,6 +229,7 @@ export class AiService {
         ? await this.prisma.chatSession.findUnique({
             where: { id: sessionId },
             select: {
+              status: true,
               deviceType: true,
               device: {
                 select: {
@@ -240,6 +241,10 @@ export class AiService {
             },
           })
         : null;
+
+      if (sessionContext && sessionContext.status !== 'AI_CONSULTING') {
+        throw new BadRequestException('Phiên chẩn đoán AI này đã đóng (có thể đã đặt thợ hoặc kết thúc). Không thể chat thêm.');
+      }
 
       let deviceContext = '';
       if (devices.length > 0) {
