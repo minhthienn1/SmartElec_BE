@@ -3,6 +3,12 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { v4 as uuidv4 } from 'uuid';
 import { extname } from 'path';
 
+type UploadedFileMetadata = {
+  url: string;
+  storageKey: string;
+  storedFileName: string;
+};
+
 @Injectable()
 export class UploadService {
   private readonly s3Client: S3Client;
@@ -50,10 +56,10 @@ export class UploadService {
       // Ghép URL công khai hoàn chỉnh
       const publicFileUrl = `${this.publicUrl}/${key}`;
 
-      console.log(`☁️ [R2] Upload thành công: ${publicFileUrl}`);
+      console.log(`[R2] Upload thành công: ${publicFileUrl}`);
       return publicFileUrl;
     } catch (error : any) {
-      console.error(`❌ [R2] Upload thất bại:`, error.message);
+      console.error(`[R2] Upload thất bại:`, error.message);
       throw new InternalServerErrorException(
         'Không thể upload file: ' + error.message,
       );
@@ -61,6 +67,39 @@ export class UploadService {
   }
 
   // --- MỚI: DÀNH RIÊNG CHO CHAT (SỬ DỤNG UUID) ---
+  async uploadFileWithMetadata(
+    file: Express.Multer.File,
+    folder: string,
+    storedFileName = `${Date.now()}-${uuidv4()}${extname(file.originalname).toLowerCase()}`,
+  ): Promise<UploadedFileMetadata> {
+    const key = `${folder}/${storedFileName}`;
+
+    try {
+      await this.s3Client.send(
+        new PutObjectCommand({
+          Bucket: this.bucketName,
+          Key: key,
+          Body: file.buffer,
+          ContentType: file.mimetype,
+        }),
+      );
+
+      const publicFileUrl = `${this.publicUrl}/${key}`;
+
+      console.log(`[R2] Upload thành công: ${publicFileUrl}`);
+      return {
+        url: publicFileUrl,
+        storageKey: key,
+        storedFileName,
+      };
+    } catch (error : any) {
+      console.error(`[R2] Upload thất bại:`, error.message);
+      throw new InternalServerErrorException(
+        'Không thể upload file: ' + error.message,
+      );
+    }
+  }
+
   async uploadMediaToR2(file: Express.Multer.File): Promise<string> {
     try {
       const uniqueFileName = `chats/${uuidv4()}${extname(file.originalname)}`;
