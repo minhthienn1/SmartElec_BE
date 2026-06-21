@@ -65,6 +65,11 @@ enum AssignmentAction {
   SYSTEM_AUTO_CANCEL      // Hệ thống tự hủy sau 30 phút
 }
 
+enum SessionType {
+  AI_DIAGNOSIS
+  DIRECT_BOOKING
+}
+
 // ======================================================================
 // 2. BẢNG NGƯỜI DÙNG & THIẾT BỊ
 // ======================================================================

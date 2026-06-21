@@ -398,7 +398,6 @@ export class ChatsController {
   ) {
     const userId = Number(req.user.id || req.user.userId || req.user.sub);
     
-    // Gọi sang hàm deleteUserSession ở chats.service.ts mà bạn vừa thêm
     return this.chatsService.deleteUserSession(userId, sessionId);
   }
 }
