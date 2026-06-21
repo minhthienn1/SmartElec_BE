@@ -24,40 +24,45 @@ enum Gender {
 }
 
 enum JobStatus {
-  AI_CONSULTING // Đang chat với AI
-  BROADCASTING // Đang phát sóng tìm thợ
-  MATCHED // Thợ đã nhận ca, phòng chat mở
-  EN_ROUTE // Thợ đang trên đường di chuyển đến nhà khách
-  ARRIVED // Thợ đã đến nơi, đang kiểm tra
-  IN_PROGRESS // Đã chốt báo giá, đang tiến hành sửa
-  COMPLETED // Hoàn thành (thợ xác nhận)
-  DONE // Alias cũ, giữ lại để tương thích
-  CANCELLED // Bị hủy
+  AI_CONSULTING           // Đang chat với AI
+  BROADCASTING            // Đang phát sóng tìm thợ
+  MATCHED                 // Thợ đã nhận ca, phòng chat mở
+  EN_ROUTE                // Thợ đang trên đường di chuyển đến nhà khách
+  ARRIVED                 // Thợ đã đến nơi, đang kiểm tra
+  IN_PROGRESS             // Đã chốt báo giá, đang tiến hành sửa
+  COMPLETED               // Hoàn thành (thợ xác nhận)
+  DONE                    // Alias cũ, giữ lại để tương thích
+  CANCELLED               // Bị hủy
 }
 
 enum MessageType {
   TEXT
   IMAGE
-  VIDEO // Video gửi trong chat
-  QUOTE_CARD // Thẻ báo giá
-  SYSTEM_LOG // Tin nhắn hệ thống
+  VIDEO                   // Video gửi trong chat
+  QUOTE_CARD              // Thẻ báo giá
+  SYSTEM_LOG              // Tin nhắn hệ thống
   QUOTE_RESPONSE
 }
 
+enum SessionType {
+  AI_DIAGNOSIS
+  DIRECT_BOOKING
+}
+
 enum QuoteStatus {
-  PENDING // Chờ khách duyệt
-  ACCEPTED // Khách đồng ý
-  REJECTED // Khách từ chối
-  SUPERSEDED // Bị thay thế bởi báo giá mới
-  CANCELLED // Thợ tự hủy
+  PENDING                 // Chờ khách duyệt
+  ACCEPTED                // Khách đồng ý
+  REJECTED                // Khách từ chối
+  SUPERSEDED              // Bị thay thế bởi báo giá mới
+  CANCELLED               // Thợ tự hủy
 }
 
 enum AssignmentAction {
-  ASSIGNED // Thợ nhận đơn
-  UNASSIGNED // Thợ hủy đơn
-  REJECTED // Khách từ chối thợ
-  MANUAL_CANCEL // Thợ chủ động hủy
-  SYSTEM_AUTO_CANCEL // Hệ thống tự hủy sau 30 phút
+  ASSIGNED                // Thợ nhận đơn
+  UNASSIGNED              // Thợ hủy đơn
+  REJECTED                // Khách từ chối thợ
+  MANUAL_CANCEL           // Thợ chủ động hủy
+  SYSTEM_AUTO_CANCEL      // Hệ thống tự hủy sau 30 phút
 }
 
 // ======================================================================
@@ -66,18 +71,18 @@ enum AssignmentAction {
 
 // Enum phân quyền truy cập tài liệu RAG
 enum AccessLevel {
-  BASIC // Dành cho cả Khách hàng & Thợ (vệ sinh, kiểm tra phích cắm...)
-  ADVANCED // CHỈ dành cho Thợ có chuyên môn (tháo máy, sửa bo mạch...)
+  BASIC                   // Dành cho cả Khách hàng & Thợ (vệ sinh, kiểm tra phích cắm...)
+  ADVANCED                // CHỈ dành cho Thợ có chuyên môn (tháo máy, sửa bo mạch...)
 }
 
 enum RagDocumentStatus {
-  UPLOADED
-  PARSING
-  CHUNKING
-  EMBEDDING
-  READY
-  FAILED
-  ARCHIVED
+  UPLOADED                // Đã tải lên, chờ hệ thống xử lý
+  PARSING                 // Đang phân tích và trích xuất nội dung từ file
+  CHUNKING                // Đang chia nội dung thành các đoạn nhỏ
+  EMBEDDING               // Đang tạo vector embedding cho từng chunk
+  READY                   // Đã xử lý xong, sẵn sàng dùng để truy xuất RAG
+  FAILED                  // Xử lý thất bại, cần xem errorMessage
+  ARCHIVED                // Đã lưu trữ/ẩn, không còn dùng trong truy xuất mặc định
 }
 
 enum RagFileType {
@@ -94,12 +99,12 @@ enum RagFileType {
 }
 
 enum RagDocumentKind {
-  TROUBLESHOOTING_GUIDE
-  REPAIR_POLICY
-  PRICE_TABLE
-  DEVICE_MANUAL
-  FAQ
-  INTERNAL_NOTE
+  TROUBLESHOOTING_GUIDE   // Hướng dẫn xử lý lỗi
+  REPAIR_POLICY           // Chính sách sửa chữa
+  PRICE_TABLE             // Bảng giá
+  DEVICE_MANUAL           // Hướng dẫn thiết bị
+  FAQ                     // Câu hỏi thường gặp
+  INTERNAL_NOTE           // Ghi chú nội bộ
 }
 
 model User {
@@ -179,8 +184,9 @@ model ChatSession {
   aiSummary   String? @db.Text
   isDangerous Boolean @default(false)
 
-  status  JobStatus @default(AI_CONSULTING)
-  version Int       @default(1) // Khóa lạc quan (Optimistic Locking)
+  status      JobStatus   @default(AI_CONSULTING)
+  version     Int         @default(1) // Khóa lạc quan (Optimistic Locking)
+  sessionType SessionType @default(AI_DIAGNOSIS)
 
   isHiddenByCustomer Boolean @default(false)
 
