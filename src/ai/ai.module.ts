@@ -3,10 +3,10 @@ import { AiService } from './ai.service';
 import { AiController } from './ai.controller';
 import { PrismaModule } from '../prisma/prisma.module';
 import { ConfigModule } from '@nestjs/config';
-import { MechanicAiModule } from '../mechanic-ai/mechanic-ai.module';
+import { RagModule } from '../rag/rag.module';
 
 @Module({
-  imports: [PrismaModule, ConfigModule, MechanicAiModule],
+  imports: [PrismaModule, ConfigModule, RagModule],
   controllers: [AiController],
   providers: [AiService],
   exports: [AiService],

@@ -1,4 +1,14 @@
-import { Controller, Post, Get, Body, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Get,
+  Body,
+  UseGuards,
+  Patch,
+  Delete,
+  Param,
+  ParseIntPipe,
+} from '@nestjs/common';
 import { RagService } from './rag.service';
 import { IngestDocumentDto } from './dto/ingest-document.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -18,5 +28,18 @@ export class RagController {
   @Get('documents')
   async getAllDocuments() {
     return this.ragService.getAllDocuments();
+  }
+
+  @Patch('documents/:id')
+  async updateDocument(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: IngestDocumentDto,
+  ) {
+    return this.ragService.updateDocument(id, dto);
+  }
+
+  @Delete('documents/:id')
+  async deleteDocument(@Param('id', ParseIntPipe) id: number) {
+    return this.ragService.deleteDocument(id);
   }
 }

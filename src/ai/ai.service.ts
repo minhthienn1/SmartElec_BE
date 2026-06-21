@@ -3,7 +3,8 @@ import { GoogleGenerativeAI, GenerativeModel, SchemaType } from '@google/generat
 import { PrismaService } from '../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
 
-import { MechanicAiService } from '../mechanic-ai/mechanic-ai.service';
+import { RagRetrievalService } from '../rag/rag-retrieval.service';
+import { RAG_LIMITS } from '../rag/rag.constants';
 
 // ═══════════════════════════════════════════════════════════════════
 // SYSTEM PROMPT — SmartElec Buddy
@@ -52,8 +53,7 @@ GIAI ĐOẠN 2 — CHẨN ĐOÁN (phase=DIAGNOSING)
 🟢 MỨC XANH: Lỗi vận hành thuần túy (không lạnh, không vắt đồ, ồn).
 
 --- 2B. FORMAT OUTPUT ---
-- Trường "text": Phản hồi chat tự nhiên với khách, tóm tắt -> nguyên nhân -> hướng dẫn.
-- Trường "technical_summary": BẮT BUỘC tóm tắt lại sự cố chuyên môn cực kỳ ngắn gọn (Tối đa 3 câu). Chỉ gạch đầu dòng Nguyên nhân và Cách xử lý. TUYỆT ĐỐI KHÔNG dùng từ ngữ xưng hô giao tiếp.
+- Tóm tắt -> Nguyên nhân -> Hướng dẫn an toàn -> Kết luận. Dùng Markdown nhấn mạnh.
 
 ══════════════════════════════════════════
 QUY TẮC ĐẶT THỢ CHỐNG ẢO GIÁC (BẮT BUỘC)
@@ -74,10 +74,6 @@ const responseSchema: any = {
     text: {
       type: SchemaType.STRING,
       description: 'Lời phản hồi cho khách hàng, có thể dùng Markdown',
-    },
-    technical_summary: {
-      type: SchemaType.STRING,
-      description: 'Tóm tắt bệnh án chuyên môn ngắn gọn (Nguyên nhân & Cách xử lý). Cực kỳ súc tích. Tuyệt đối KHÔNG có lời chào hỏi giao tiếp (Dạ, Vâng, Cháu, Bác...). Dùng để lưu vào database.',
     },
     state: {
       type: SchemaType.OBJECT,
@@ -151,7 +147,7 @@ export class AiService {
   constructor(
     private prisma: PrismaService,
     private configService: ConfigService,
-    private mechanicAiService: MechanicAiService,
+    private ragRetrievalService: RagRetrievalService,
   ) {
     const apiKey = this.configService.get<string>('GEMINI_API_KEY') || '';
     this.genAI = new GoogleGenerativeAI(apiKey);
@@ -229,6 +225,21 @@ export class AiService {
         where: { userId },
         select: { category: true, brandName: true, modelCode: true },
       });
+      const sessionContext = sessionId
+        ? await this.prisma.chatSession.findUnique({
+            where: { id: sessionId },
+            select: {
+              deviceType: true,
+              device: {
+                select: {
+                  category: true,
+                  brandName: true,
+                  modelCode: true,
+                },
+              },
+            },
+          })
+        : null;
 
       let deviceContext = '';
       if (devices.length > 0) {
@@ -242,10 +253,59 @@ export class AiService {
       });
       const accessLevel = (user?.role === 'TECHNICIAN' || user?.role === 'ADMIN') ? 'ADVANCED' : 'BASIC';
       
-      let ragContext = '';
+      let ragContext = `
+[KIáº¾N THá»¨C Tá»ª Há»† THá»NG]:
+Khong tim thay tai lieu noi bo phu hop cho cau hoi nay. Khong duoc bia nguon hoac noi rang da tham khao tai lieu noi bo neu thuc te khong co.
+`;
+      let retrievedChunks: any[] = [];
       try {
-        const ragRes = await this.mechanicAiService.findRelevantDocs(message, accessLevel, 3);
+        const fallbackDevice = devices.length === 1 ? devices[0] : null;
+        const primaryDevice = sessionContext?.device || fallbackDevice;
+        const categoryFilter =
+          sessionContext?.deviceType ||
+          primaryDevice?.category ||
+          prevState?.deviceCategory ||
+          prevState?.device ||
+          null;
+        const brandFilter = primaryDevice?.brandName || null;
+        const modelCodeFilter = primaryDevice?.modelCode || null;
+
+        let ragRes = await this.ragRetrievalService.findRelevantChunks({
+          query: message,
+          accessLevel,
+          limit: RAG_LIMITS.DEFAULT_RETRIEVAL_LIMIT,
+          minScore: RAG_LIMITS.MIN_RETRIEVAL_SCORE,
+          category: categoryFilter,
+          brand: brandFilter,
+          modelCode: modelCodeFilter,
+        });
         let results = ragRes.results as any[];
+
+        if (
+          results.length === 0 &&
+          (categoryFilter || brandFilter || modelCodeFilter)
+        ) {
+          ragRes = await this.ragRetrievalService.findRelevantChunks({
+            query: message,
+            accessLevel,
+            limit: RAG_LIMITS.DEFAULT_RETRIEVAL_LIMIT,
+            minScore: RAG_LIMITS.MIN_RETRIEVAL_SCORE,
+          });
+          results = ragRes.results as any[];
+        }
+
+        if (results.length === 0) {
+          ragRes = await this.ragRetrievalService.findRelevantChunks({
+            query: message,
+            accessLevel,
+            limit: RAG_LIMITS.DEFAULT_RETRIEVAL_LIMIT,
+            minScore: 0,
+            category: categoryFilter,
+            brand: brandFilter,
+            modelCode: modelCodeFilter,
+          });
+          results = ragRes.results as any[];
+        }
 
         const errorCodesMatch = message.match(/\b[A-Z][0-9]\b|\b[A-Z]{2,3}[0-9]?\b/g); 
         if (errorCodesMatch && errorCodesMatch.length > 0) {
@@ -258,8 +318,23 @@ export class AiService {
           });
         }
 
+        retrievedChunks = results;
+
         if (results && results.length > 0) {
-          const docsText = results.map((d: any) => `- [${d.title}] (Nguồn: ${d.source || 'Tài liệu nội bộ'}): ${d.content}`).join('\n\n');
+          const docsText = results
+            .map((d: any) => {
+              const title = d.documentTitle || d.title || 'Tai lieu RAG';
+              const source = d.source || 'Tai lieu noi bo';
+              const category = d.category ? `\nLoai thiet bi: ${d.category}` : '';
+              const brandModel = [d.brand, d.modelCode].filter(Boolean).join(' / ');
+              const brandModelLine = brandModel
+                ? `\nThuong hieu/Model: ${brandModel}`
+                : '';
+              const sectionLine = d.section ? `\nMuc: ${d.section}` : '';
+
+              return `- Tai lieu: ${title}\nNguon: ${source}${category}${brandModelLine}${sectionLine}\nNoi dung chunk: ${d.content}`;
+            })
+            .join('\n\n');
           ragContext = `
 [KIẾN THỨC TỪ HỆ THỐNG]:
 ${docsText}
@@ -369,12 +444,23 @@ ${negativeText || '   (Chưa có)'}
         const device = parsed.state?.device || (prevState as any)?.device || 'thiết bị';
         const symptom = parsed.state?.symptom || (prevState as any)?.symptom || 'sự cố';
         
-       sessionId = await this.saveRepairCase(userId, device, symptom, parsed.technical_summary || parsed.text || 'Booking via AI', sessionId);
+       sessionId = await this.saveRepairCase(userId, device, symptom, parsed.text || 'Booking via AI', sessionId);
+
+        let logId: number | null = null;
+        try {
+          logId = await this.saveReasoningLog(userId, sessionId, message, prevState, parsed);
+          if (logId && retrievedChunks.length > 0) {
+            await this.saveRetrievedChunks(logId, retrievedChunks);
+          }
+        } catch (e) {
+          this.logger.error('Failed to save reasoning log', e);
+        }
 
         return {
           ...parsed,
           is_booking_triggered: true, // Đảm bảo luôn luôn là true khi trả về
           sessionId,
+          logId,
         };
       }
 
@@ -391,7 +477,7 @@ ${negativeText || '   (Chưa có)'}
           userId,
           parsed.state.device,
           parsed.state.symptom,
-          parsed.technical_summary || parsed.text,
+          parsed.text,
           sessionId,
         );
       }
@@ -400,8 +486,10 @@ ${negativeText || '   (Chưa có)'}
       let logId: number | null = null;
       try {
         logId = await this.saveReasoningLog(userId, sessionId, message, prevState, parsed);
+        if (logId && retrievedChunks.length > 0) {
+          await this.saveRetrievedChunks(logId, retrievedChunks);
+        }
       } catch (e) {
-        this.prisma.aiReasoningLog
         this.logger.error('Failed to save reasoning log', e);
       }
 
@@ -457,6 +545,23 @@ ${negativeText || '   (Chưa có)'}
     } catch (err) {
       this.logger.error('Error saving reasoning log to DB', err);
       return null;
+    }
+  }
+
+  private async saveRetrievedChunks(logId: number, results: any[]) {
+    try {
+      await this.prisma.aiRetrievedChunk.createMany({
+        data: results.map((result, index) => ({
+          logId,
+          chunkId: Number(result.chunkId),
+          score: typeof result.score === 'number' ? result.score : null,
+          rank: index + 1,
+        })),
+        skipDuplicates: true,
+      });
+    } catch (error) {
+      this.logger.warn(`Khong the luu ai_retrieved_chunks cho log #${logId}`);
+      this.logger.warn(error);
     }
   }
 

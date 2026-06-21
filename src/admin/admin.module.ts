@@ -6,6 +6,7 @@ import { AdminDashboardModule } from './dashboard/admin-dashboard.module';
 import { AdminDispatchModule } from './dispatch/admin-dispatch.module';
 import { AdminModerationModule } from './moderation/admin-moderation.module';
 import { AdminQuotesModule } from './quotes/admin-quotes.module';
+import { AdminRagKnowledgeModule } from './rag-knowledge/admin-rag-knowledge.module';
 import { AdminRepairSessionsModule } from './repair-sessions/admin-repair-sessions.module';
 import { AdminReviewsModule } from './reviews/admin-reviews.module';
 import { AdminTechniciansModule } from './technicians/admin-technicians.module';
@@ -19,6 +20,7 @@ import { AdminTechniciansModule } from './technicians/admin-technicians.module';
     AdminDispatchModule,
     AdminModerationModule,
     AdminQuotesModule,
+    AdminRagKnowledgeModule,
     AdminRepairSessionsModule,
     AdminReviewsModule,
     AdminTechniciansModule,
