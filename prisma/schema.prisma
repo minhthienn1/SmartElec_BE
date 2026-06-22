@@ -115,6 +115,7 @@ model User {
   gender      Gender
   email       String? @unique
   avatarUrl   String?
+  avatarData  Bytes?  // Ảnh đại diện lưu trực tiếp vào DB dưới dạng nhị phân
   address     String?
   fcmToken    String?
 
@@ -425,7 +426,7 @@ model RagChunk {
 
   // Vector embedding của chunk
   // Chiều 768 dùng cho Google text-embedding-004 / embedding model tương thích 768 dimensions
-  embedding Unsupported("vector(768)")?
+  // embedding Unsupported("vector(768)")?
 
   isActive Boolean @default(true)
 
@@ -476,7 +477,7 @@ model TechnicalDocument {
   content     String                      @db.Text // Đoạn nội dung (chunk) đã được xử lý
   category    String? // Loại thiết bị liên quan (vd: "Máy lạnh", "Tủ lạnh")
   source      String? // Nguồn gốc tài liệu (vd: "Manual Daikin 2024", "Kỹ thuật viên nội bộ")
-  embedding   Unsupported("vector(768)")?
+  // embedding   Unsupported("vector(768)")?
   // Phân quyền: BASIC = khách & thợ đều xem được; ADVANCED = chỉ thợ
   accessLevel AccessLevel                 @default(ADVANCED)
 

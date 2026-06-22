@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { Gender } from '@prisma/client'; 
+import { Gender } from '@prisma/client';
 
 @Injectable()
 export class UsersService {
@@ -15,6 +15,7 @@ export class UsersService {
         email: true,
         gender: true,
         avatarUrl: true,
+        avatarData: true,
         address: true,
         role: true,
         averageRating: true,
@@ -23,7 +24,11 @@ export class UsersService {
       },
     });
     if (!user) throw new NotFoundException(`Không tìm thấy user ${userId}`);
-    return user;
+    const { avatarData, ...rest } = user as any;
+    return {
+      ...rest,
+      avatarBase64: avatarData ? (avatarData as Buffer).toString('base64') : null,
+    };
   }
 
   async updateProfile(id: number, data: { fullName?: string, email?: string, address?: string, gender?: string }) {
@@ -47,6 +52,7 @@ export class UsersService {
         gender: true,
         email: true,
         avatarUrl: true,
+        avatarData: true,
         address: true,
         role: true,
         isActive: true,
@@ -56,7 +62,12 @@ export class UsersService {
     if (!user) {
       throw new NotFoundException(`Không tìm thấy người dùng với ID ${id}`);
     }
-    return user;
+
+    const { avatarData, ...rest } = user as any;
+    return {
+      ...rest,
+      avatarBase64: avatarData ? (avatarData as Buffer).toString('base64') : null,
+    };
   }
 
   async updateFcmToken(userId: number, token: string) {
@@ -80,4 +91,28 @@ export class UsersService {
       },
     });
   }
-}
+
+  // Upload và lưu ảnh đại diện trực tiếp vào database (Bytes / BLOB)
+  async uploadAvatar(userId: number, fileBuffer: Buffer): Promise<{ avatarBase64: string }> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException(`Không tìm thấy user ${userId}`);
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { avatarData: fileBuffer },
+    });
+
+    // Trả về chuỗi base64 để app hiển thị ngay lập tức (không cần gọi API lại)
+    return { avatarBase64: fileBuffer.toString('base64') };
+  }
+
+  // Lấy ảnh đại diện dưới dạng base64 string
+  async getAvatarBase64(userId: number): Promise<string | null> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { avatarData: true },
+    });
+    if (!user || !user.avatarData) return null;
+    return (user.avatarData as Buffer).toString('base64');
+  }
+}
