@@ -30,12 +30,6 @@ export class UploadService {
     this.publicUrl = process.env.R2_PUBLIC_URL as string;
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // UPLOAD FILE LÊN CLOUDFLARE R2
-  // - file: File từ Multer (req.file)
-  // - folder: Thư mục trên R2 (VD: 'chat-images', 'avatars')
-  // - Trả về URL công khai của file vừa upload
-  // ─────────────────────────────────────────────────────────────────
   async uploadFile(
     file: Express.Multer.File,
     folder: string,
@@ -53,12 +47,11 @@ export class UploadService {
 
       await this.s3Client.send(command);
 
-      // Ghép URL công khai hoàn chỉnh
       const publicFileUrl = `${this.publicUrl}/${key}`;
 
       console.log(`[R2] Upload thành công: ${publicFileUrl}`);
       return publicFileUrl;
-    } catch (error : any) {
+    } catch (error: any) {
       console.error(`[R2] Upload thất bại:`, error.message);
       throw new InternalServerErrorException(
         'Không thể upload file: ' + error.message,
@@ -66,7 +59,6 @@ export class UploadService {
     }
   }
 
-  // --- MỚI: DÀNH RIÊNG CHO CHAT (SỬ DỤNG UUID) ---
   async uploadFileWithMetadata(
     file: Express.Multer.File,
     folder: string,
@@ -92,7 +84,7 @@ export class UploadService {
         storageKey: key,
         storedFileName,
       };
-    } catch (error : any) {
+    } catch (error: any) {
       console.error(`[R2] Upload thất bại:`, error.message);
       throw new InternalServerErrorException(
         'Không thể upload file: ' + error.message,

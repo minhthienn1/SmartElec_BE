@@ -26,8 +26,9 @@ import { RagChunkingService } from './rag-chunking.service';
 import { RagEmbeddingService } from './rag-embedding.service';
 import { buildChunkEmbeddingText } from './rag-embedding-text.util';
 import { RagFileParserService } from './rag-file-parser.service';
-import { normalizeRagFilename } from './rag-filename.util';
+import { hasInvalidRagFilename, normalizeRagFilename } from './rag-filename.util';
 import { RagTextCleanerService } from './rag-text-cleaner.service';
+
 
 type ImportedDocumentResult = {
   id: number;
@@ -85,7 +86,7 @@ export class RagIngestionService {
     private readonly ragEmbeddingService: RagEmbeddingService,
     @InjectQueue('rag-import-queue')
     private readonly ragImportQueue: Queue,
-  ) {}
+  ) { }
 
   private buildChunkTitle(
     baseTitle: string,
@@ -108,16 +109,16 @@ export class RagIngestionService {
       return [];
     }
 
-    if (Array.isArray(tags)) {
-      return tags
+    const normalized = Array.isArray(tags)
+      ? tags
         .map((tag) => String(tag).trim())
-        .filter((tag) => tag.length > 0);
-    }
+        .filter((tag) => tag.length > 0)
+      : String(tags)
+          .split(',')
+          .map((tag) => tag.trim())
+          .filter((tag) => tag.length > 0);
 
-    return String(tags)
-      .split(',')
-      .map((tag) => tag.trim())
-      .filter((tag) => tag.length > 0);
+    return [...new Set(normalized)];
   }
 
   private async updateChunkEmbedding(
@@ -373,9 +374,16 @@ export class RagIngestionService {
       const parsed = await this.ragFileParserService.parse(syntheticFile);
       const cleanedText = this.ragTextCleanerService.clean(parsed.content);
 
-      if (!cleanedText) {
+      if (!cleanedText.trim()) {
+        const isPdfFile =
+          document.fileType === RagFileType.PDF ||
+          document.mimeType?.toLowerCase().includes('pdf') ||
+          document.originalFileName?.toLowerCase().endsWith('.pdf');
+
         throw new BadRequestException(
-          'File không có nội dung hợp lệ sau khi làm sạch.',
+          isPdfFile
+            ? 'PDF này là file scan/ảnh, hệ thống chưa hỗ trợ OCR. Vui lòng upload PDF có thể copy chữ, DOCX hoặc TXT.'
+            : 'File không có nội dung hợp lệ sau khi làm sạch.',
         );
       }
 
@@ -487,10 +495,12 @@ export class RagIngestionService {
 
     if (parsedSegments && parsedSegments.length > 0) {
       return normalizedSegments(
-        parsedSegments.flatMap((segment, segmentIndex) => {
-          const chunkedSegments = this.ragChunkingService.chunk({
-            content: segment.content,
-          });
+          parsedSegments.flatMap((segment, segmentIndex) => {
+            const chunkedSegments = this.ragChunkingService.chunk({
+              content: segment.content,
+              maxChars: RAG_LIMITS.DEFAULT_CHUNK_MAX_CHARS,
+              overlapChars: RAG_LIMITS.DEFAULT_CHUNK_OVERLAP_CHARS,
+            });
 
           return chunkedSegments.map((chunk) => ({
             title:
@@ -509,7 +519,11 @@ export class RagIngestionService {
       );
     }
 
-    const chunkedSegments = this.ragChunkingService.chunk({ content });
+    const chunkedSegments = this.ragChunkingService.chunk({
+      content,
+      maxChars: RAG_LIMITS.DEFAULT_CHUNK_MAX_CHARS,
+      overlapChars: RAG_LIMITS.DEFAULT_CHUNK_OVERLAP_CHARS,
+    });
 
     return normalizedSegments(
       chunkedSegments.map((chunk) => ({
@@ -675,12 +689,12 @@ export class RagIngestionService {
           tokenCount: chunk.tokenCount,
           metadata: chunk.metadata
             ? {
-                ...chunk.metadata,
-                originalFileName,
-              }
+              ...chunk.metadata,
+              originalFileName,
+            }
             : {
-                originalFileName,
-              },
+              originalFileName,
+            },
         },
       });
 
@@ -711,6 +725,13 @@ export class RagIngestionService {
       },
     });
   }
+  private async validateFileBeforeStorage(
+    file: Express.Multer.File,
+    _fileType: RagFileType,
+  ): Promise<void> {
+    this.ragFileParserService.validateInput(file);
+  }
+
   async importFile(
     file: Express.Multer.File,
     dto: ImportRagFileDto,
@@ -720,12 +741,29 @@ export class RagIngestionService {
       throw new BadRequestException('Không tìm thấy file để import.');
     }
 
+    if (file.size <= 0) {
+      throw new BadRequestException('File import đang rỗng.');
+    }
+
     const originalFileName = normalizeRagFilename(file.originalname);
 
-    /*
-      Quan trọng:
-      Gán lại để upload/parser/log phía sau đều dùng tên file đã sửa mojibake.
-    */
+    if (!originalFileName.trim()) {
+      throw new BadRequestException('Tên file import không hợp lệ.');
+    }
+
+    if (originalFileName.length > RAG_LIMITS.MAX_FILENAME_CHARS) {
+      throw new BadRequestException(
+        `Tên file quá dài. Tối đa cho phép: ${RAG_LIMITS.MAX_FILENAME_CHARS} ký tự.`,
+      );
+    }
+
+    if (hasInvalidRagFilename(originalFileName)) {
+      throw new BadRequestException(
+        'Tên file chứa ký tự điều khiển không hợp lệ.',
+      );
+    }
+
+    // Gán lại để upload/parser/log phía sau đều dùng tên file đã sửa mojibake.
     file.originalname = originalFileName;
 
     const checksum = createHash('sha256').update(file.buffer).digest('hex');
@@ -733,15 +771,12 @@ export class RagIngestionService {
 
     await this.ensureNoActiveDuplicate(checksum);
 
+    // Chặn PDF scan/ảnh trước khi upload R2 và trước khi tạo RagDocument.
+    await this.validateFileBeforeStorage(file, fileType);
+
     const storedFileName = `${Date.now()}-${checksum.slice(0, 12)}${extname(
       originalFileName,
     ).toLowerCase()}`;
-
-    const uploadResult = await this.uploadService.uploadFileWithMetadata(
-      file,
-      'rag-knowledge',
-      storedFileName,
-    );
 
     const baseTitle =
       dto.title?.trim() || originalFileName.replace(/\.[^.]+$/, '');
@@ -753,6 +788,12 @@ export class RagIngestionService {
     const tags = this.normalizeTags(dto.tags);
 
     try {
+      const uploadResult = await this.uploadService.uploadFileWithMetadata(
+        file,
+        'rag-knowledge',
+        storedFileName,
+      );
+
       const createdDocument = await this.prisma.ragDocument.create({
         data: {
           title: baseTitle,
@@ -765,7 +806,7 @@ export class RagIngestionService {
           fileType,
           fileSizeBytes: BigInt(file.size),
           checksum,
-          kind: dto.kind,
+          kind: dto.kind ?? null,
           category,
           brand,
           modelCode,
@@ -773,7 +814,7 @@ export class RagIngestionService {
           tags,
           accessLevel,
           status: RagDocumentStatus.UPLOADED,
-          uploadedById,
+          uploadedById: uploadedById ?? null,
         },
       });
 

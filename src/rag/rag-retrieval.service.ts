@@ -58,8 +58,9 @@ export class RagRetrievalService {
     }
 
     try {
+      const normalizedQuery = query.trim().replace(/\s+/g, ' ');
       const embeddingValues =
-        await this.ragEmbeddingService.generateEmbedding(query);
+        await this.ragEmbeddingService.generateEmbedding(normalizedQuery);
       const vector = this.ragEmbeddingService.toPgVector(embeddingValues);
 
       const whereClauses: Prisma.Sql[] = [

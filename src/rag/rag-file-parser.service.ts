@@ -1,574 +1,732 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { RagFileType } from '@prisma/client';
 import { extname } from 'path';
-import * as XLSX from 'xlsx';
-import mammoth from 'mammoth';
 import { PDFParse } from 'pdf-parse';
+import * as mammoth from 'mammoth';
+import * as XLSX from 'xlsx';
 
-import { RAG_IMPORT_UNSUPPORTED_FILE_MESSAGE } from './rag.constants';
+import { RAG_LIMITS, RAG_IMPORT_UNSUPPORTED_FILE_MESSAGE } from './rag.constants';
 import { normalizeRagFilename } from './rag-filename.util';
+import { RagTextCleanerService } from './rag-text-cleaner.service';
 
-type ParsedRagSegment = {
+export type ParsedRagSegment = {
   title?: string;
   section?: string | null;
   content: string;
+  pageNumber?: number | null;
+  sheetName?: string | null;
+  rowIndex?: number | null;
   metadata?: Record<string, unknown>;
 };
 
-type ParsedRagFile = {
+export type ParsedRagFile = {
   fileType: RagFileType;
   content: string;
-  metadata?: Record<string, unknown>;
   segments?: ParsedRagSegment[];
+  metadata?: Record<string, unknown>;
 };
 
-type SpreadsheetCellValue = string | number | boolean | Date | null | undefined;
+type PdfTextResult = {
+  text?: string;
+  total?: number;
+  numpages?: number;
+};
 
-type SpreadsheetRow = string[];
+const PDF_SCAN_ERROR_MESSAGE =
+  'PDF này là file scan/ảnh, hệ thống chưa hỗ trợ OCR. Vui lòng upload PDF có thể copy chữ, DOCX hoặc TXT.';
 
 @Injectable()
 export class RagFileParserService {
   private readonly logger = new Logger(RagFileParserService.name);
 
-  private readonly maxRowsPerCsv = 1000;
-  private readonly maxRowsPerSheet = 500;
-  private readonly maxSpreadsheetCellLength = 800;
+  constructor(
+    private readonly ragTextCleanerService: RagTextCleanerService,
+  ) {}
+
+  async parse(file: Express.Multer.File): Promise<ParsedRagFile> {
+    return this.parseFile(file);
+  }
+
+  validateInput(file: Express.Multer.File): RagFileType {
+    if (!file) {
+      throw new BadRequestException('Vui lòng chọn file để import RAG.');
+    }
+
+    const fileType = this.inferFileType(file);
+    if (fileType === RagFileType.UNKNOWN) {
+      throw new BadRequestException(RAG_IMPORT_UNSUPPORTED_FILE_MESSAGE);
+    }
+
+    this.validateFileSignature(file, fileType);
+    return fileType;
+  }
 
   inferFileType(file: Express.Multer.File): RagFileType {
-    const originalName = normalizeRagFilename(file.originalname || '');
-    const extension = extname(originalName).toLowerCase();
+    const extension = this.getFileExtension(file);
     const mimeType = (file.mimetype || '').toLowerCase();
 
-    if (extension === '.txt' || mimeType === 'text/plain') {
-      return RagFileType.TXT;
-    }
-
-    if (
-      extension === '.md' ||
-      extension === '.markdown' ||
-      mimeType === 'text/markdown'
-    ) {
-      return RagFileType.MD;
-    }
-
-    if (
-      extension === '.csv' ||
-      mimeType === 'text/csv' ||
-      mimeType === 'application/csv' ||
-      mimeType === 'application/vnd.ms-excel'
-    ) {
-      return RagFileType.CSV;
-    }
-
-    if (
-      extension === '.docx' ||
-      mimeType ===
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-    ) {
-      return RagFileType.DOCX;
-    }
-
-    if (
-      extension === '.xlsx' ||
-      mimeType ===
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    ) {
-      return RagFileType.XLSX;
-    }
-
-    if (extension === '.pdf' || mimeType === 'application/pdf') {
+    if (extension === '.pdf' || mimeType.includes('pdf')) {
       return RagFileType.PDF;
     }
 
-    throw new BadRequestException(RAG_IMPORT_UNSUPPORTED_FILE_MESSAGE);
+    if (extension === '.docx') {
+      return RagFileType.DOCX;
+    }
+
+    if (extension === '.xlsx') {
+      return RagFileType.XLSX;
+    }
+
+    if (extension === '.xls') {
+      return RagFileType.XLS;
+    }
+
+    if (extension === '.csv') {
+      return RagFileType.CSV;
+    }
+
+    if (extension === '.md' || extension === '.markdown') {
+      return RagFileType.MD;
+    }
+
+    if (extension === '.txt' || mimeType.startsWith('text/')) {
+      return RagFileType.TXT;
+    }
+
+    if (extension === '.html' || extension === '.htm') {
+      return RagFileType.HTML;
+    }
+
+    if (extension === '.json' || mimeType.includes('json')) {
+      return RagFileType.JSON;
+    }
+
+    return RagFileType.UNKNOWN;
   }
 
-  private normalizeFileName(file: Express.Multer.File): string {
-    const originalFileName = normalizeRagFilename(file.originalname || '');
+  async parseFile(file: Express.Multer.File): Promise<ParsedRagFile> {
+    if (!file) {
+      throw new BadRequestException('Vui lòng chọn file để import RAG.');
+    }
 
-    /*
-      Gán lại để các bước parse/log phía sau đều dùng filename đã sửa mojibake.
-      Ingestion service cũng nên làm tương tự trước khi upload.
-    */
-    file.originalname = originalFileName;
+    const fileType = this.inferFileType(file);
+    if (fileType === RagFileType.UNKNOWN) {
+      throw new BadRequestException(RAG_IMPORT_UNSUPPORTED_FILE_MESSAGE);
+    }
 
-    return originalFileName;
+    this.validateFileSignature(file, fileType);
+
+    switch (fileType) {
+      case RagFileType.PDF:
+        return this.parsePdf(file);
+      case RagFileType.DOCX:
+        return this.parseDocx(file);
+      case RagFileType.XLSX:
+      case RagFileType.XLS:
+        return this.parseWorkbook(file);
+      case RagFileType.CSV:
+        return this.parseCsv(file);
+      case RagFileType.MD:
+        return this.parseMarkdown(file);
+      case RagFileType.TXT:
+        return this.parsePlainText(file);
+      case RagFileType.JSON:
+        return this.parseJson(file);
+      case RagFileType.HTML:
+        return this.parseHtml(file);
+      default:
+        throw new BadRequestException(RAG_IMPORT_UNSUPPORTED_FILE_MESSAGE);
+    }
   }
 
-  private normalizeRawText(text: string): string {
+  private getFileExtension(file: Express.Multer.File): string {
+    return extname(file.originalname || '').toLowerCase();
+  }
+
+  private getOriginalFileName(file: Express.Multer.File): string {
+    return normalizeRagFilename(file.originalname || 'unknown-file');
+  }
+
+  private hasZipSignature(buffer: Buffer) {
+    if (buffer.length < 4) {
+      return false;
+    }
+
+    return (
+      (buffer[0] === 0x50 &&
+        buffer[1] === 0x4b &&
+        buffer[2] === 0x03 &&
+        buffer[3] === 0x04) ||
+      (buffer[0] === 0x50 &&
+        buffer[1] === 0x4b &&
+        buffer[2] === 0x05 &&
+        buffer[3] === 0x06) ||
+      (buffer[0] === 0x50 &&
+        buffer[1] === 0x4b &&
+        buffer[2] === 0x07 &&
+        buffer[3] === 0x08)
+    );
+  }
+
+  private hasPdfSignature(buffer: Buffer) {
+    return buffer.length >= 5 && buffer.subarray(0, 5).toString('ascii') === '%PDF-';
+  }
+
+  private looksLikeBinary(buffer: Buffer) {
+    const sample = buffer.subarray(0, Math.min(buffer.length, 512));
+    return sample.includes(0);
+  }
+
+  private validateFileSignature(file: Express.Multer.File, fileType: RagFileType) {
+    const { buffer } = file;
+
+    switch (fileType) {
+      case RagFileType.PDF:
+        if (!this.hasPdfSignature(buffer)) {
+          throw new BadRequestException('File PDF không hợp lệ hoặc đã bị hỏng.');
+        }
+        return;
+      case RagFileType.DOCX:
+      case RagFileType.XLSX:
+      case RagFileType.XLS:
+        if (!this.hasZipSignature(buffer)) {
+          throw new BadRequestException(
+            'File bảng tính hoặc tài liệu Office không hợp lệ.',
+          );
+        }
+        return;
+      case RagFileType.TXT:
+      case RagFileType.MD:
+      case RagFileType.CSV:
+      case RagFileType.JSON:
+      case RagFileType.HTML:
+        if (this.looksLikeBinary(buffer)) {
+          throw new BadRequestException(
+            'File văn bản không hợp lệ hoặc đang chứa dữ liệu nhị phân.',
+          );
+        }
+        return;
+      default:
+        return;
+    }
+  }
+
+  private decodeTextFile(file: Express.Multer.File): string {
+    return file.buffer.toString('utf8').replace(/^\uFEFF/, '');
+  }
+
+  private normalizeWhitespace(text: string): string {
     return text
-      .replace(/^\uFEFF/, '')
       .replace(/\r\n/g, '\n')
       .replace(/\r/g, '\n')
-      .replace(/\u0000/g, '')
       .replace(/[ \t]+\n/g, '\n')
-      .replace(/[ \t]{2,}/g, ' ')
-      .replace(/\n{4,}/g, '\n\n\n')
+      .replace(/\n{3,}/g, '\n\n')
       .trim();
   }
 
-  private ensureText(
-    text: string,
-    errorMessage: string,
-    minimumLength = 20,
-  ): string {
-    const normalized = this.normalizeRawText(text);
-
-    if (normalized.length < minimumLength) {
-      throw new BadRequestException(errorMessage);
-    }
-
-    return normalized;
+  private hasMeaningfulText(text: string) {
+    const compactText = text.replace(/\s+/g, '');
+    const match = compactText.match(/[a-zA-ZÀ-ỹ0-9]/g);
+    return Boolean(match && match.length >= 80);
   }
 
-  private stripExtension(filename: string): string {
-    return filename.replace(/\.[^.]+$/, '');
-  }
+  private async parsePdf(file: Express.Multer.File): Promise<ParsedRagFile> {
+    const originalFileName = this.getOriginalFileName(file);
 
-  private truncateValue(value: string, maxLength = this.maxSpreadsheetCellLength) {
-    if (value.length <= maxLength) {
-      return value;
+    let result: PdfTextResult;
+    try {
+      const parser = new PDFParse({ data: file.buffer });
+      result = await parser.getText();
+    } catch (error) {
+      this.logger.warn(
+        `Không thể parse PDF ${originalFileName}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      throw new BadRequestException(
+        'Không thể đọc nội dung PDF. Vui lòng kiểm tra file hoặc chuyển sang DOCX/TXT.',
+      );
     }
 
-    return `${value.slice(0, maxLength).trim()}...`;
-  }
+    const cleanedText = this.ragTextCleanerService.clean(result.text || '');
+    const pageCount = result.total ?? result.numpages ?? null;
 
-  private convertCellValue(value: SpreadsheetCellValue): string {
-    if (value === null || value === undefined) {
-      return '';
+    if (!this.hasMeaningfulText(cleanedText)) {
+      this.logger.warn(
+        `PDF ${originalFileName} không có text layer hợp lệ sau khi parse. pageCount=${
+          pageCount ?? 'unknown'
+        }`,
+      );
+      throw new BadRequestException(PDF_SCAN_ERROR_MESSAGE);
     }
 
-    if (value instanceof Date) {
-      return value.toISOString().slice(0, 10);
-    }
-
-    return this.truncateValue(String(value).trim());
-  }
-
-  private normalizeRows(rawRows: SpreadsheetCellValue[][]): SpreadsheetRow[] {
-    return rawRows
-      .map((row) => row.map((cell) => this.convertCellValue(cell)))
-      .filter((row) => row.some((cell) => cell.length > 0));
-  }
-
-  private detectHeaderRow(rows: SpreadsheetRow[]): boolean {
-    const firstRow = rows[0];
-    const secondRow = rows[1];
-
-    if (!firstRow || firstRow.length === 0) {
-      return false;
-    }
-
-    const normalized = firstRow
-      .map((cell) => cell.trim().toLowerCase())
-      .filter((cell) => cell.length > 0);
-
-    if (normalized.length === 0) {
-      return false;
-    }
-
-    const uniqueCount = new Set(normalized).size;
-    const isMostlyUnique = uniqueCount >= Math.max(1, normalized.length - 1);
-    const hasNonNumericLabel = normalized.some((cell) =>
-      Number.isNaN(Number(cell)),
+    this.logger.log(
+      `Đã tách văn bản PDF ${originalFileName}, số trang=${
+        pageCount ?? 'unknown'
+      }, số ký tự=${cleanedText.length}`,
     );
 
-    if (!secondRow) {
-      return isMostlyUnique && hasNonNumericLabel;
-    }
-
-    const usefulHeaderCells = normalized.filter((cell, index) => {
-      const nextValue = secondRow[index]?.trim().toLowerCase() ?? '';
-
-      return cell.length > 0 && cell.length <= 80 && nextValue !== cell;
-    }).length;
-
-    return isMostlyUnique && hasNonNumericLabel && usefulHeaderCells > 0;
-  }
-
-  private buildRowSegment(params: {
-    parser: 'csv' | 'xlsx';
-    titlePrefix: string;
-    section: string;
-    headers: string[];
-    row: SpreadsheetRow;
-    rowIndex: number;
-    extraMetadata?: Record<string, unknown>;
-  }): ParsedRagSegment | null {
-    const { parser, titlePrefix, section, headers, row, rowIndex, extraMetadata } =
-      params;
-
-    const pairs = row
-      .map((value, columnIndex) => {
-        if (!value) {
-          return null;
-        }
-
-        const key = headers[columnIndex]?.trim() || `Cột ${columnIndex + 1}`;
-
-        return `- ${key}: ${value}`;
-      })
-      .filter((item): item is string => Boolean(item));
-
-    if (pairs.length === 0) {
-      return null;
-    }
-
     return {
-      title: `${titlePrefix} - Dòng ${rowIndex}`,
-      section,
-      content: `${section}\nDòng ${rowIndex}:\n${pairs.join('\n')}`,
+      fileType: RagFileType.PDF,
+      content: cleanedText,
       metadata: {
-        parser,
-        headers,
-        rowIndex,
-        rowRange: `${rowIndex}-${rowIndex}`,
-        ...extraMetadata,
+        parser: 'pdf-parse',
+        pageCount,
+        originalFileName,
       },
     };
   }
 
-  private parseTxt(file: Express.Multer.File): ParsedRagFile {
-    this.normalizeFileName(file);
+  private async parseDocx(file: Express.Multer.File): Promise<ParsedRagFile> {
+    const originalFileName = this.getOriginalFileName(file);
 
-    const content = this.ensureText(
-      file.buffer.toString('utf-8'),
-      'File TXT không có nội dung hợp lệ để import.',
-      1,
-    );
+    try {
+      const result = await mammoth.extractRawText({ buffer: file.buffer });
+      const content = this.normalizeWhitespace(result.value || '');
+
+      if (!content) {
+        throw new BadRequestException(
+          'File DOCX không có nội dung hợp lệ để import RAG.',
+        );
+      }
+
+      return {
+        fileType: RagFileType.DOCX,
+        content,
+        metadata: {
+          parser: 'mammoth',
+          originalFileName,
+          messages: result.messages || [],
+        },
+      };
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
+      this.logger.warn(
+        `Không thể parse DOCX ${originalFileName}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      throw new BadRequestException(
+        'Không thể đọc nội dung DOCX. Vui lòng kiểm tra lại file.',
+      );
+    }
+  }
+
+  private parseWorkbook(file: Express.Multer.File): ParsedRagFile {
+    const originalFileName = this.getOriginalFileName(file);
+
+    try {
+      const workbook = XLSX.read(file.buffer, {
+        type: 'buffer',
+        cellDates: true,
+      });
+
+      if (workbook.SheetNames.length === 0) {
+        throw new BadRequestException(
+          'File bảng tính không có sheet hợp lệ để import RAG.',
+        );
+      }
+
+      if (workbook.SheetNames.length > RAG_LIMITS.MAX_WORKBOOK_SHEETS) {
+        throw new BadRequestException(
+          `File bảng tính có quá nhiều sheet. Tối đa cho phép: ${RAG_LIMITS.MAX_WORKBOOK_SHEETS}.`,
+        );
+      }
+
+      const segments: ParsedRagSegment[] = [];
+      const contentParts: string[] = [];
+      let totalRows = 0;
+
+      for (const sheetName of workbook.SheetNames) {
+        const sheet = workbook.Sheets[sheetName];
+        if (!sheet) {
+          continue;
+        }
+
+        const rows = XLSX.utils.sheet_to_json<
+          Array<string | number | boolean | Date | null>
+        >(sheet, {
+          header: 1,
+          defval: '',
+          blankrows: false,
+        });
+
+        const normalizedRows = rows
+          .map((row) => row.map((cell) => this.stringifyCell(cell)))
+          .filter((row) => row.some((cell) => cell.trim().length > 0));
+
+        if (normalizedRows.length === 0) {
+          continue;
+        }
+
+        totalRows += normalizedRows.length;
+        if (totalRows > RAG_LIMITS.MAX_WORKBOOK_ROWS) {
+          throw new BadRequestException(
+            `File bảng tính có quá nhiều dòng dữ liệu. Tối đa cho phép: ${RAG_LIMITS.MAX_WORKBOOK_ROWS}.`,
+          );
+        }
+
+        const header = normalizedRows[0] || [];
+        const bodyRows = normalizedRows.slice(1);
+        const sheetLines = [`Sheet: ${sheetName}`];
+
+        if (header.length > 0) {
+          sheetLines.push(`Columns: ${header.join(' | ')}`);
+        }
+
+        bodyRows.forEach((row, index) => {
+          const rowNumber = index + 2;
+          const line = this.buildSpreadsheetRowText(header, row, rowNumber);
+          sheetLines.push(line);
+
+          segments.push({
+            title: `${originalFileName} - ${sheetName} - Dòng ${rowNumber}`,
+            section: `Sheet: ${sheetName}`,
+            content: line,
+            sheetName,
+            rowIndex: rowNumber,
+            metadata: {
+              parser: 'xlsx',
+              sheetName,
+              rowIndex: rowNumber,
+              columns: header,
+            },
+          });
+        });
+
+        contentParts.push(sheetLines.join('\n'));
+      }
+
+      const content = this.normalizeWhitespace(contentParts.join('\n\n'));
+      if (!content) {
+        throw new BadRequestException(
+          'File bảng tính không có nội dung hợp lệ để import RAG.',
+        );
+      }
+
+      return {
+        fileType:
+          this.getFileExtension(file) === '.xls'
+            ? RagFileType.XLS
+            : RagFileType.XLSX,
+        content,
+        segments: segments.length > 0 ? segments : undefined,
+        metadata: {
+          parser: 'xlsx',
+          originalFileName,
+          sheetNames: workbook.SheetNames,
+          rowCount: totalRows,
+        },
+      };
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
+      this.logger.warn(
+        `Không thể parse workbook ${originalFileName}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      throw new BadRequestException(
+        'Không thể đọc nội dung XLS/XLSX. Vui lòng kiểm tra lại file.',
+      );
+    }
+  }
+
+  private parseCsv(file: Express.Multer.File): ParsedRagFile {
+    const originalFileName = this.getOriginalFileName(file);
+
+    try {
+      const workbook = XLSX.read(file.buffer, {
+        type: 'buffer',
+        raw: false,
+      });
+
+      const firstSheetName = workbook.SheetNames[0];
+      const firstSheet = firstSheetName ? workbook.Sheets[firstSheetName] : null;
+      if (!firstSheet) {
+        throw new BadRequestException(
+          'File CSV không có nội dung hợp lệ để import RAG.',
+        );
+      }
+
+      const rows = XLSX.utils.sheet_to_json<
+        Array<string | number | boolean | Date | null>
+      >(firstSheet, {
+        header: 1,
+        defval: '',
+        blankrows: false,
+      });
+
+      const normalizedRows = rows
+        .map((row) => row.map((cell) => this.stringifyCell(cell)))
+        .filter((row) => row.some((cell) => cell.trim().length > 0));
+
+      if (normalizedRows.length === 0) {
+        throw new BadRequestException(
+          'File CSV không có nội dung hợp lệ để import RAG.',
+        );
+      }
+
+      if (normalizedRows.length > RAG_LIMITS.MAX_WORKBOOK_ROWS) {
+        throw new BadRequestException(
+          `File CSV có quá nhiều dòng dữ liệu. Tối đa cho phép: ${RAG_LIMITS.MAX_WORKBOOK_ROWS}.`,
+        );
+      }
+
+      const header = normalizedRows[0] || [];
+      const bodyRows = normalizedRows.slice(1);
+      const segments: ParsedRagSegment[] = [];
+      const lines: string[] = [];
+
+      if (header.length > 0) {
+        lines.push(`Columns: ${header.join(' | ')}`);
+      }
+
+      bodyRows.forEach((row, index) => {
+        const rowNumber = index + 2;
+        const line = this.buildSpreadsheetRowText(header, row, rowNumber);
+        lines.push(line);
+
+        segments.push({
+          title: `${originalFileName} - Dòng ${rowNumber}`,
+          section: `CSV: ${originalFileName}`,
+          content: line,
+          rowIndex: rowNumber,
+          metadata: {
+            parser: 'csv',
+            rowIndex: rowNumber,
+            columns: header,
+          },
+        });
+      });
+
+      const content = this.normalizeWhitespace(lines.join('\n'));
+      if (!content) {
+        throw new BadRequestException(
+          'File CSV không có nội dung hợp lệ để import RAG.',
+        );
+      }
+
+      return {
+        fileType: RagFileType.CSV,
+        content,
+        segments: segments.length > 0 ? segments : undefined,
+        metadata: {
+          parser: 'xlsx-csv',
+          originalFileName,
+          rowCount: normalizedRows.length,
+          columns: header,
+        },
+      };
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
+      this.logger.warn(
+        `Không thể parse CSV ${originalFileName}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      throw new BadRequestException(
+        'Không thể đọc nội dung CSV. Vui lòng kiểm tra lại file.',
+      );
+    }
+  }
+
+  private parseMarkdown(file: Express.Multer.File): ParsedRagFile {
+    const originalFileName = this.getOriginalFileName(file);
+    const content = this.normalizeWhitespace(this.decodeTextFile(file));
+
+    if (!content) {
+      throw new BadRequestException(
+        'File Markdown không có nội dung hợp lệ để import RAG.',
+      );
+    }
+
+    const segments = this.extractMarkdownSegments(content, originalFileName);
+
+    return {
+      fileType: RagFileType.MD,
+      content,
+      segments: segments.length > 0 ? segments : undefined,
+      metadata: {
+        parser: 'markdown',
+        originalFileName,
+      },
+    };
+  }
+
+  private parsePlainText(file: Express.Multer.File): ParsedRagFile {
+    const originalFileName = this.getOriginalFileName(file);
+    const content = this.normalizeWhitespace(this.decodeTextFile(file));
+
+    if (!content) {
+      throw new BadRequestException(
+        'File TXT không có nội dung hợp lệ để import RAG.',
+      );
+    }
 
     return {
       fileType: RagFileType.TXT,
       content,
       metadata: {
-        parser: 'txt',
+        parser: 'plain-text',
+        originalFileName,
       },
     };
   }
 
-  private flushMarkdownSegment(params: {
-    segments: ParsedRagSegment[];
-    title?: string;
-    headingPath: string[];
-    lines: string[];
-  }) {
-    const { segments, title, headingPath, lines } = params;
-    const content = lines.join('\n').trim();
+  private parseJson(file: Express.Multer.File): ParsedRagFile {
+    const originalFileName = this.getOriginalFileName(file);
+    const rawText = this.decodeTextFile(file);
 
-    if (!content) {
-      return;
-    }
+    try {
+      const parsed = JSON.parse(rawText);
+      const content = this.normalizeWhitespace(JSON.stringify(parsed, null, 2));
 
-    segments.push({
-      title: title || headingPath[headingPath.length - 1] || undefined,
-      section:
-        headingPath.length > 0 ? headingPath.join(' > ') : title || null,
-      content,
-      metadata: {
-        parser: 'markdown',
-        headingPath: headingPath.length > 0 ? [...headingPath] : [],
-      },
-    });
-  }
-
-  private parseMarkdown(file: Express.Multer.File): ParsedRagFile {
-    this.normalizeFileName(file);
-
-    const content = this.ensureText(
-      file.buffer.toString('utf-8'),
-      'File Markdown không có nội dung hợp lệ để import.',
-      1,
-    );
-
-    const lines = content.split('\n');
-    const segments: ParsedRagSegment[] = [];
-    const headingPath: string[] = [];
-    let currentTitle: string | undefined;
-    let currentLines: string[] = [];
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      const headingMatch = /^(#{1,6})\s+(.+)$/.exec(trimmed);
-
-      if (headingMatch) {
-        this.flushMarkdownSegment({
-          segments,
-          title: currentTitle,
-          headingPath,
-          lines: currentLines,
-        });
-
-        const level = headingMatch[1].length;
-        const headingText = headingMatch[2].trim();
-
-        headingPath.splice(level - 1);
-        headingPath[level - 1] = headingText;
-
-        currentTitle = headingText;
-        currentLines = [trimmed];
-        continue;
+      if (!content) {
+        throw new BadRequestException(
+          'File JSON không có nội dung hợp lệ để import RAG.',
+        );
       }
 
-      currentLines.push(line);
+      return {
+        fileType: RagFileType.JSON,
+        content,
+        metadata: {
+          parser: 'json',
+          originalFileName,
+        },
+      };
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
+      throw new BadRequestException(
+        'File JSON không hợp lệ. Vui lòng kiểm tra lại cấu trúc JSON.',
+      );
     }
-
-    this.flushMarkdownSegment({
-      segments,
-      title: currentTitle,
-      headingPath,
-      lines: currentLines,
-    });
-
-    return {
-      fileType: RagFileType.MD,
-      content,
-      metadata: {
-        parser: 'markdown',
-      },
-      segments: segments.length > 0 ? segments : undefined,
-    };
   }
 
-  private parseCsv(file: Express.Multer.File): ParsedRagFile {
-    const originalFileName = this.normalizeFileName(file);
-    const rawText = this.ensureText(
-      file.buffer.toString('utf-8'),
-      'File CSV không có dữ liệu để import.',
-      1,
+  private parseHtml(file: Express.Multer.File): ParsedRagFile {
+    const originalFileName = this.getOriginalFileName(file);
+    const rawHtml = this.decodeTextFile(file);
+
+    const content = this.normalizeWhitespace(
+      rawHtml
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'"),
     );
 
-    /*
-      Dùng XLSX để parse CSV thay vì split(',') thủ công.
-      Lý do: CSV có thể có cell dạng "abc, def", dấu ngoặc kép, dòng trống.
-    */
-    const workbook = XLSX.read(rawText, {
-      type: 'string',
-      raw: false,
-      cellDates: true,
-    });
-
-    const sheetName = workbook.SheetNames[0];
-    const sheet = sheetName ? workbook.Sheets[sheetName] : null;
-
-    if (!sheet) {
-      throw new BadRequestException('File CSV không có dữ liệu để import.');
-    }
-
-    const rawRows = XLSX.utils.sheet_to_json<SpreadsheetCellValue[]>(sheet, {
-      header: 1,
-      blankrows: false,
-      defval: '',
-    });
-
-    const rows = this.normalizeRows(rawRows).slice(0, this.maxRowsPerCsv);
-
-    if (rows.length === 0) {
-      throw new BadRequestException('File CSV không có dữ liệu để import.');
-    }
-
-    const hasHeaderRow = this.detectHeaderRow(rows);
-    const headers = hasHeaderRow
-      ? rows[0]
-      : rows[0].map((_, columnIndex) => `Cột ${columnIndex + 1}`);
-    const dataRows = hasHeaderRow ? rows.slice(1) : rows;
-    const csvLabel = `CSV: ${this.stripExtension(originalFileName)}`;
-
-    const segments = dataRows
-      .map((row, index) =>
-        this.buildRowSegment({
-          parser: 'csv',
-          titlePrefix: csvLabel,
-          section: csvLabel,
-          headers,
-          row,
-          rowIndex: index + (hasHeaderRow ? 2 : 1),
-        }),
-      )
-      .filter((segment): segment is ParsedRagSegment => Boolean(segment));
-
-    const fallbackContent = this.ensureText(
-      rows.map((row) => row.join(', ')).join('\n'),
-      'File CSV không có dữ liệu để import.',
-      1,
-    );
-
-    return {
-      fileType: RagFileType.CSV,
-      content:
-        segments.length > 0
-          ? segments.map((segment) => segment.content).join('\n\n')
-          : fallbackContent,
-      metadata: {
-        parser: 'csv',
-        headers,
-        rowCount: dataRows.length,
-        truncated: rawRows.length > this.maxRowsPerCsv,
-      },
-      segments: segments.length > 0 ? segments : undefined,
-    };
-  }
-
-  private async parseDocx(file: Express.Multer.File): Promise<ParsedRagFile> {
-    const originalFileName = this.normalizeFileName(file);
-
-    const result = await mammoth.extractRawText({ buffer: file.buffer });
-
-    if (result.messages.length > 0) {
-      this.logger.warn(
-        `DOCX parser warnings for ${originalFileName}: ${result.messages
-          .map((message) => message.message)
-          .join(' | ')}`,
+    if (!content) {
+      throw new BadRequestException(
+        'File HTML không có nội dung hợp lệ để import RAG.',
       );
     }
 
-    const content = this.ensureText(
-      result.value,
-      'File DOCX không có nội dung text hợp lệ.',
-    );
-
     return {
-      fileType: RagFileType.DOCX,
+      fileType: RagFileType.HTML,
       content,
       metadata: {
-        parser: 'docx',
+        parser: 'html-basic',
+        originalFileName,
       },
     };
   }
 
-  private parseXlsx(file: Express.Multer.File): ParsedRagFile {
-    this.normalizeFileName(file);
+  private stringifyCell(cell: string | number | boolean | Date | null): string {
+    if (cell === null || cell === undefined) {
+      return '';
+    }
 
-    const workbook = XLSX.read(file.buffer, {
-      type: 'buffer',
-      raw: false,
-      cellDates: true,
+    if (cell instanceof Date) {
+      return cell.toISOString();
+    }
+
+    return String(cell).trim();
+  }
+
+  private buildSpreadsheetRowText(
+    header: string[],
+    row: string[],
+    rowNumber: number,
+  ) {
+    if (header.length === 0) {
+      return `Dòng ${rowNumber}: ${row.join(' | ')}`;
+    }
+
+    const values = header.map((column, index) => {
+      const columnName = column || `Cột ${index + 1}`;
+      const value = row[index] || '';
+      return `${columnName}: ${value}`;
     });
 
+    return `Dòng ${rowNumber}: ${values.join(' | ')}`;
+  }
+
+  private extractMarkdownSegments(
+    content: string,
+    originalFileName: string,
+  ): ParsedRagSegment[] {
+    const lines = content.split('\n');
     const segments: ParsedRagSegment[] = [];
-    const sheetNames: string[] = [];
-    let totalRows = 0;
-    let truncated = false;
 
-    for (const sheetName of workbook.SheetNames) {
-      const sheet = workbook.Sheets[sheetName];
+    let currentHeadingPath: string[] = [];
+    let currentTitle = originalFileName;
+    let currentLines: string[] = [];
 
-      if (!sheet) {
+    const flush = () => {
+      const segmentContent = this.normalizeWhitespace(currentLines.join('\n'));
+      if (!segmentContent) {
+        return;
+      }
+
+      segments.push({
+        title: currentTitle,
+        section: currentHeadingPath.join(' > ') || null,
+        content: segmentContent,
+        metadata: {
+          parser: 'markdown',
+          headingPath: currentHeadingPath,
+        },
+      });
+
+      currentLines = [];
+    };
+
+    for (const line of lines) {
+      const headingMatch = /^(#{1,6})\s+(.+)$/.exec(line);
+      if (!headingMatch) {
+        currentLines.push(line);
         continue;
       }
 
-      const rawRows = XLSX.utils.sheet_to_json<SpreadsheetCellValue[]>(sheet, {
-        header: 1,
-        blankrows: false,
-        defval: '',
-      });
+      flush();
 
-      if (rawRows.length > this.maxRowsPerSheet) {
-        truncated = true;
-      }
-
-      const rows = this.normalizeRows(rawRows).slice(0, this.maxRowsPerSheet);
-
-      if (rows.length === 0) {
-        continue;
-      }
-
-      sheetNames.push(sheetName);
-
-      const hasHeaderRow = this.detectHeaderRow(rows);
-      const headers = hasHeaderRow
-        ? rows[0]
-        : rows[0].map((_, columnIndex) => `Cột ${columnIndex + 1}`);
-      const dataRows = hasHeaderRow ? rows.slice(1) : rows;
-
-      dataRows.forEach((row, index) => {
-        const rowIndex = index + (hasHeaderRow ? 2 : 1);
-        const segment = this.buildRowSegment({
-          parser: 'xlsx',
-          titlePrefix: `Sheet: ${sheetName}`,
-          section: `Sheet: ${sheetName}`,
-          headers,
-          row,
-          rowIndex,
-          extraMetadata: {
-            sheetName,
-          },
-        });
-
-        if (!segment) {
-          return;
-        }
-
-        totalRows += 1;
-        segments.push(segment);
-      });
+      const level = headingMatch[1].length;
+      const headingText = headingMatch[2].trim();
+      currentHeadingPath = currentHeadingPath.slice(0, level - 1);
+      currentHeadingPath[level - 1] = headingText;
+      currentTitle = headingText || originalFileName;
+      currentLines.push(line);
     }
 
-    if (segments.length === 0) {
-      throw new BadRequestException('File XLSX không có dữ liệu text hợp lệ.');
-    }
+    flush();
 
-    return {
-      fileType: RagFileType.XLSX,
-      content: segments.map((segment) => segment.content).join('\n\n'),
-      metadata: {
-        parser: 'xlsx',
-        sheetNames,
-        rowCount: totalRows,
-        truncated,
-      },
-      segments,
-    };
-  }
-
-  private async parsePdf(file: Express.Multer.File): Promise<ParsedRagFile> {
-    const originalFileName = this.normalizeFileName(file);
-
-    const parser = new PDFParse({ data: file.buffer });
-    const result = await parser.getText();
-
-    const content = this.ensureText(
-      result.text,
-      'PDF này không có lớp text hoặc cần OCR, hiện hệ thống chưa hỗ trợ OCR.',
-    );
-
-    this.logger.log(
-      `Đã tách văn bản PDF cho ${originalFileName} với ${result.total} trang`,
-    );
-
-    return {
-      fileType: RagFileType.PDF,
-      content,
-      metadata: {
-        parser: 'pdf',
-        pageCount: result.total,
-      },
-    };
-  }
-
-  async parse(file: Express.Multer.File): Promise<ParsedRagFile> {
-    const fileType = this.inferFileType(file);
-
-    switch (fileType) {
-      case RagFileType.TXT:
-        return this.parseTxt(file);
-
-      case RagFileType.MD:
-        return this.parseMarkdown(file);
-
-      case RagFileType.CSV:
-        return this.parseCsv(file);
-
-      case RagFileType.DOCX:
-        return this.parseDocx(file);
-
-      case RagFileType.XLSX:
-        return this.parseXlsx(file);
-
-      case RagFileType.PDF:
-        return this.parsePdf(file);
-
-      default:
-        throw new BadRequestException(RAG_IMPORT_UNSUPPORTED_FILE_MESSAGE);
-    }
+    return segments;
   }
 }

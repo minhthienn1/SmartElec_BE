@@ -6,9 +6,9 @@ import {
   Get,
   Param,
   ParseIntPipe,
-  Query,
   Patch,
   Post,
+  Query,
   Req,
   UploadedFile,
   UseGuards,
@@ -16,17 +16,18 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { extname } from 'path';
+
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { ArchiveRagDocumentDto } from '../../rag/dto/archive-rag-document.dto';
-import { IngestDocumentDto } from '../../rag/dto/ingest-document.dto';
 import { ImportRagFileDto } from '../../rag/dto/import-rag-file.dto';
+import { IngestDocumentDto } from '../../rag/dto/ingest-document.dto';
+import { RagDocumentChunksQueryDto } from '../../rag/dto/rag-document-chunks-query.dto';
 import {
   ALLOWED_RAG_IMPORT_EXTENSIONS,
   ALLOWED_RAG_IMPORT_MIME_TYPES,
-  RAG_LIMITS,
   RAG_IMPORT_UNSUPPORTED_FILE_MESSAGE,
+  RAG_LIMITS,
 } from '../../rag/rag.constants';
-import { RagDocumentChunksQueryDto } from '../../rag/dto/rag-document-chunks-query.dto';
 import { AdminRagKnowledgeService } from './admin-rag-knowledge.service';
 
 @UseGuards(JwtAuthGuard)
@@ -74,8 +75,8 @@ export class AdminRagKnowledgeController {
     FileInterceptor('file', {
       limits: { fileSize: RAG_LIMITS.MAX_FILE_SIZE_BYTES },
       fileFilter: (_req, file, callback) => {
-        const extension = extname(file.originalname).toLowerCase();
-        const mimeType = file.mimetype.toLowerCase();
+        const extension = extname(file.originalname || '').toLowerCase();
+        const mimeType = (file.mimetype || '').toLowerCase();
 
         if (
           ALLOWED_RAG_IMPORT_EXTENSIONS.has(extension) &&
@@ -98,14 +99,30 @@ export class AdminRagKnowledgeController {
     @Req() req: { user?: { id?: number; userId?: number; sub?: number } },
   ) {
     if (!file) {
-      throw new BadRequestException('Không tìm thấy file để import');
+      throw new BadRequestException('Không tìm thấy file để import.');
+    }
+
+    const originalFileName = file.originalname?.trim() || '';
+
+    if (!originalFileName) {
+      throw new BadRequestException('Tên file import không hợp lệ.');
+    }
+
+    if (originalFileName.length > RAG_LIMITS.MAX_FILENAME_CHARS) {
+      throw new BadRequestException(
+        `Tên file quá dài. Tối đa cho phép: ${RAG_LIMITS.MAX_FILENAME_CHARS} ký tự.`,
+      );
+    }
+
+    if (file.size <= 0) {
+      throw new BadRequestException('File import đang rỗng.');
     }
 
     if (file.size > RAG_LIMITS.MAX_FILE_SIZE_BYTES) {
-      throw new BadRequestException('File quá lớn. Tối đa cho phép: 10MB.');
+      throw new BadRequestException('File quá lớn. Tối đa cho phép: 50MB.');
     }
 
-    const extension = extname(file.originalname).toLowerCase();
+    const extension = extname(originalFileName).toLowerCase();
     if (!ALLOWED_RAG_IMPORT_EXTENSIONS.has(extension)) {
       throw new BadRequestException(RAG_IMPORT_UNSUPPORTED_FILE_MESSAGE);
     }

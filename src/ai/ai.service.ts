@@ -144,6 +144,112 @@ export class AiService {
 
     return cleanMessage;
   }
+
+  private normalizeIntentText(message: string): string {
+    return message
+      .toLowerCase()
+      .normalize('NFC')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private includesAnyKeyword(message: string, keywords: string[]): boolean {
+    const normalizedMessage = this.normalizeIntentText(message);
+    return keywords.some((keyword) => normalizedMessage.includes(keyword));
+  }
+
+  private isGreetingIntent(message: string): boolean {
+    return this.includesAnyKeyword(message, [
+      'xin chao',
+      'xin chào',
+      'chao ban',
+      'chào bạn',
+      'hello',
+      'hi ',
+      ' alo',
+      'ad oi',
+      'ad ơi',
+    ]);
+  }
+
+  private isBookingIntent(message: string): boolean {
+    return this.includesAnyKeyword(message, [
+      'goi tho',
+      'gọi thợ',
+      'dat tho',
+      'đặt thợ',
+      'dat lich',
+      'đặt lịch',
+      'ky thuat vien',
+      'kỹ thuật viên',
+      'can tho',
+      'cần thợ',
+      'qua kiem tra',
+      'qua kiểm tra',
+    ]);
+  }
+
+  private isEmergencyIntent(message: string): boolean {
+    return this.includesAnyKeyword(message, [
+      'boc khoi',
+      'bốc khói',
+      'mui khet',
+      'mùi khét',
+      'chay',
+      'cháy',
+      'chap dien',
+      'chập điện',
+      'ro dien',
+      'rò điện',
+      'giat dien',
+      'giật điện',
+      'tia lua',
+      'tia lửa',
+      'aptomat nhay',
+      'aptomat nhảy',
+      'cau dao nhay',
+      'cầu dao nhảy',
+    ]);
+  }
+
+  private isLikelyTechnicalIntent(message: string): boolean {
+    return (
+      this.includesAnyKeyword(message, [
+        'may lanh',
+        'máy lạnh',
+        'dieu hoa',
+        'điều hòa',
+        'tu lanh',
+        'tủ lạnh',
+        'may giat',
+        'máy giặt',
+        'binh nong',
+        'bình nóng',
+        'may nuoc nong',
+        'máy nước nóng',
+        'may bom',
+        'máy bơm',
+        'o dien',
+        'ổ điện',
+        'cong tac',
+        'công tắc',
+        'khong mat',
+        'không mát',
+        'khong lanh',
+        'không lạnh',
+        'khong len nguon',
+        'không lên nguồn',
+        'khong chay',
+        'không chạy',
+        'ma loi',
+        'mã lỗi',
+        'error',
+        'loi',
+        'lỗi',
+      ]) ||
+      /\b[A-Z][0-9]\b|\b[A-Z]{2,3}[0-9]?\b/.test(message)
+    );
+  }
   constructor(
     private prisma: PrismaService,
     private configService: ConfigService,
@@ -252,6 +358,10 @@ export class AiService {
         select: { role: true },
       });
       const accessLevel = (user?.role === 'TECHNICIAN' || user?.role === 'ADMIN') ? 'ADVANCED' : 'BASIC';
+      const isGreetingIntent = this.isGreetingIntent(message);
+      const isBookingIntent = this.isBookingIntent(message);
+      const isEmergencyIntent = this.isEmergencyIntent(message);
+      const isLikelyTechnicalIntent = this.isLikelyTechnicalIntent(message);
       
       let ragContext = `
 [KIáº¾N THá»¨C Tá»ª Há»† THá»NG]:
@@ -290,19 +400,6 @@ Khong tim thay tai lieu noi bo phu hop cho cau hoi nay. Khong duoc bia nguon hoa
             accessLevel,
             limit: RAG_LIMITS.DEFAULT_RETRIEVAL_LIMIT,
             minScore: RAG_LIMITS.MIN_RETRIEVAL_SCORE,
-          });
-          results = ragRes.results as any[];
-        }
-
-        if (results.length === 0) {
-          ragRes = await this.ragRetrievalService.findRelevantChunks({
-            query: message,
-            accessLevel,
-            limit: RAG_LIMITS.DEFAULT_RETRIEVAL_LIMIT,
-            minScore: 0,
-            category: categoryFilter,
-            brand: brandFilter,
-            modelCode: modelCodeFilter,
           });
           results = ragRes.results as any[];
         }
@@ -347,6 +444,36 @@ ${docsText}
       }
 
       // ── 3. RLHF: TIÊU CHUẨN VÀNG ────────────────
+      if (
+        retrievedChunks.length === 0 &&
+        isLikelyTechnicalIntent &&
+        !isGreetingIntent &&
+        !isBookingIntent &&
+        !isEmergencyIntent
+      ) {
+        const parsed = {
+          text:
+            'Hiện tôi chưa có tài liệu kỹ thuật phù hợp trong hệ thống cho trường hợp này. Bác vui lòng cho biết rõ tên thiết bị, hãng/model, mã lỗi hoặc triệu chứng cụ thể để tôi kiểm tra lại chính xác hơn nhé!',
+          state: prevState || SAFE_FALLBACK_STATE,
+          is_booking_triggered: false,
+        };
+
+        let logId: number | null = null;
+        try {
+          logId = await this.saveReasoningLog(
+            userId,
+            sessionId ?? null,
+            message,
+            prevState,
+            parsed,
+          );
+        } catch (e) {
+          this.logger.error('Failed to save reasoning log', e);
+        }
+
+        return { ...parsed, sessionId: sessionId ?? null, logId };
+      }
+
       const currentCategory = (prevState as any)?.device || (devices.length > 0 ? devices[0].category : '');
       let rlhfInstruction = '';
       if (currentCategory) {
