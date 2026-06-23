@@ -60,4 +60,8 @@ export class AdminRagKnowledgeService {
   ) {
     return this.ragIngestionService.importFile(file, dto, uploadedById);
   }
+
+  suggestImportMetadata(file: Express.Multer.File) {
+    return this.ragIngestionService.suggestImportMetadata(file);
+  }
 }
