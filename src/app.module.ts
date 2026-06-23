@@ -18,6 +18,7 @@ import { MechanicAiModule } from './mechanic-ai/mechanic-ai.module';
 import { JobsModule } from './jobs/jobs.module';
 import { AdminModule } from './admin/admin.module';
 import { RagModule } from './rag/rag.module';
+import { TechnicianModule } from './technician/technician.module';
 
 @Module({
   imports: [
@@ -59,6 +60,7 @@ import { RagModule } from './rag/rag.module';
     RagModule,
     JobsModule,
     AdminModule,
+    TechnicianModule,
   ],
   controllers: [AppController],
   providers: [AppService],

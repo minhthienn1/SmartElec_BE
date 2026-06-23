@@ -8,13 +8,290 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
-// ======================================================================
-// 1. ENUMS (DANH MỤC TRẠNG THÁI)
-// ======================================================================
+model User {
+  id                   Int                        @id @default(autoincrement())
+  phoneNumber          String                     @unique
+  password             String
+  fullName             String?
+  email                String?                    @unique
+  avatarUrl            String?
+  address              String?
+  role                 UserRole                   @default(USER)
+  isVerified           Boolean                    @default(false)
+  isActive             Boolean                    @default(true)
+  lastLogin            DateTime?
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
+  gender               Gender
+  averageRating        Float                      @default(0.0)
+  fcmToken             String?
+  googleId             String?                    @unique
+  isOnline             Boolean                    @default(false)
+  latitude             Float?
+  longitude            Float?
+  needsPassword        Boolean                    @default(false)
+  totalReviews         Int                        @default(0)
+  zaloId               String?                    @unique
+  technicianSessions   ChatSession[]              @relation("TechnicianSessions")
+  chatSessions         ChatSession[]              @relation("CustomerSessions")
+  devices              Device[]
+  sentMessages         Message[]                  @relation("SentMessages")
+  quotesCreated        Quote[]
+  uploadedRagDocuments RagDocument[]
+  reviewsReceived      Review[]                   @relation("TechnicianReviews")
+  reviewsGiven         Review[]                   @relation("UserReviews")
+  assignmentHistories  SessionAssignmentHistory[]
+
+  @@map("users")
+}
+
+model Device {
+  id                     Int           @id @default(autoincrement())
+  category               String
+  brandName              String
+  modelCode              String?
+  location               String?
+  purchaseDate           DateTime?
+  warrantyMonths         Int?
+  maintenanceCycleMonths Int?
+  nextMaintenanceDate    DateTime?
+  userId                 Int
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+  chatSessions           ChatSession[]
+  user                   User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("devices")
+}
+
+model ChatSession {
+  id                  Int                        @id @default(autoincrement())
+  deviceType          String?
+  symptom             String?
+  aiSummary           String?
+  isDangerous         Boolean                    @default(false)
+  userId              Int
+  createdAt           DateTime                   @default(now())
+  updatedAt           DateTime                   @updatedAt
+  deviceId            Int?
+  address             String?
+  contactName         String?
+  contactPhone        String?
+  isHiddenByCustomer  Boolean                    @default(false)
+  latitude            Float?
+  longitude           Float?
+  status              JobStatus                  @default(AI_CONSULTING)
+  technicianId        Int?
+  version             Int                        @default(1)
+  sessionType         SessionType                @default(AI_DIAGNOSIS)
+  device              Device?                    @relation(fields: [deviceId], references: [id])
+  technician          User?                      @relation("TechnicianSessions", fields: [technicianId], references: [id])
+  user                User                       @relation("CustomerSessions", fields: [userId], references: [id], onDelete: Cascade)
+  messages            Message[]
+  quotes              Quote[]
+  review              Review?
+  assignmentHistories SessionAssignmentHistory[]
+
+  @@map("chat_sessions")
+}
+
+model Review {
+  id           Int         @id @default(autoincrement())
+  sessionId    Int         @unique
+  userId       Int
+  technicianId Int
+  rating       Int
+  comment      String?
+  tags         String[]
+  createdAt    DateTime    @default(now())
+  session      ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  technician   User        @relation("TechnicianReviews", fields: [technicianId], references: [id])
+  user         User        @relation("UserReviews", fields: [userId], references: [id])
+
+  @@map("reviews")
+}
+
+model Message {
+  id        Int         @id @default(autoincrement())
+  sessionId Int
+  senderId  Int?
+  type      MessageType @default(TEXT)
+  content   String
+  metadata  Json?
+  isRead    Boolean     @default(false)
+  isDeleted Boolean     @default(false)
+  deletedAt DateTime?
+  createdAt DateTime    @default(now())
+  sender    User?       @relation("SentMessages", fields: [senderId], references: [id])
+  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@map("messages")
+}
+
+model Quote {
+  id            Int         @id @default(autoincrement())
+  sessionId     Int
+  technicianId  Int
+  title         String
+  amount        Float
+  status        QuoteStatus @default(PENDING)
+  version       Int         @default(1)
+  parentQuoteId Int?
+  acceptedAt    DateTime?
+  rejectedAt    DateTime?
+  cancelledAt   DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  session       ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  technician    User        @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  expectedTime  String?
+  @@map("quotes")
+}
+
+model SessionAssignmentHistory {
+  id            Int              @id @default(autoincrement())
+  chatSessionId Int
+  technicianId  Int
+  action        AssignmentAction
+  createdAt     DateTime         @default(now())
+  chatSession   ChatSession      @relation(fields: [chatSessionId], references: [id], onDelete: Cascade)
+  technician    User             @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+
+  @@map("session_assignment_history")
+}
+
+model AiReasoningLog {
+  id              Int                @id @default(autoincrement())
+  sessionId       Int?
+  userId          Int
+  userMsg         String
+  prevState       Json?
+  nextState       Json?
+  riskLevel       String?
+  aiResponse      String?
+  aiFeedback      String?
+  score           Int                @default(0)
+  deviceCategory  String?
+  isGolden        Boolean            @default(false)
+  createdAt       DateTime           @default(now())
+  retrievedChunks AiRetrievedChunk[]
+
+  @@map("ai_reasoning_logs")
+}
+
+model RagDocument {
+  id               Int               @id @default(autoincrement())
+  title            String
+  description      String?
+  originalFileName String?
+  storedFileName   String?
+  fileUrl          String?
+  storageKey       String?
+  mimeType         String?
+  fileType         RagFileType       @default(UNKNOWN)
+  fileSizeBytes    BigInt?
+  checksum         String?
+  kind             RagDocumentKind?
+  category         String?
+  brand            String?
+  modelCode        String?
+  source           String?
+  tags             String[]
+  accessLevel      AccessLevel       @default(ADVANCED)
+  status           RagDocumentStatus @default(UPLOADED)
+  errorMessage     String?
+  totalChunks      Int               @default(0)
+  totalCharacters  Int               @default(0)
+  totalTokens      Int               @default(0)
+  version          Int               @default(1)
+  isActive         Boolean           @default(true)
+  uploadedById     Int?
+  parsedAt         DateTime?
+  indexedAt        DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  chunks           RagChunk[]
+  uploadedBy       User?             @relation(fields: [uploadedById], references: [id])
+
+  @@index([status])
+  @@index([category])
+  @@index([brand])
+  @@index([kind])
+  @@index([accessLevel])
+  @@index([isActive])
+  @@index([uploadedById])
+  @@index([checksum])
+  @@map("rag_documents")
+}
+
+model RagChunk {
+  id              Int                    @id @default(autoincrement())
+  documentId      Int
+  chunkIndex      Int
+  title           String?
+  section         String?
+  content         String
+  pageNumber      Int?
+  sheetName       String?
+  rowIndex        Int?
+  metadata        Json?
+  category        String?
+  brand           String?
+  modelCode       String?
+  tags            String[]
+  accessLevel     AccessLevel            @default(ADVANCED)
+  tokenCount      Int?
+  charCount       Int?
+  embedding       Unsupported("vector")?
+  isActive        Boolean                @default(true)
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  retrievedByLogs AiRetrievedChunk[]
+  document        RagDocument            @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, chunkIndex])
+  @@index([documentId])
+  @@index([category])
+  @@index([brand])
+  @@index([accessLevel])
+  @@index([isActive])
+  @@map("rag_chunks")
+}
+
+model AiRetrievedChunk {
+  id        Int            @id @default(autoincrement())
+  logId     Int
+  chunkId   Int
+  score     Float?
+  rank      Int?
+  createdAt DateTime       @default(now())
+  chunk     RagChunk       @relation(fields: [chunkId], references: [id], onDelete: Cascade)
+  log       AiReasoningLog @relation(fields: [logId], references: [id], onDelete: Cascade)
+
+  @@unique([logId, chunkId])
+  @@index([logId])
+  @@index([chunkId])
+  @@map("ai_retrieved_chunks")
+}
+
+model TechnicalDocument {
+  id          Int                    @id @default(autoincrement())
+  title       String
+  content     String
+  category    String?
+  source      String?
+  embedding   Unsupported("vector")?
+  accessLevel AccessLevel            @default(ADVANCED)
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+
+  @@map("technical_documents")
+}
+
 enum UserRole {
-  USER // Khách hàng
-  TECHNICIAN // Thợ sửa chữa
-  ADMIN // Quản trị viên
+  USER
+  TECHNICIAN
+  ADMIN
 }
 
 enum Gender {
@@ -24,23 +301,23 @@ enum Gender {
 }
 
 enum JobStatus {
-  AI_CONSULTING // Đang chat với AI
-  BROADCASTING // Đang phát sóng tìm thợ
-  MATCHED // Thợ đã nhận ca, phòng chat mở
-  EN_ROUTE // Thợ đang trên đường di chuyển đến nhà khách
-  ARRIVED // Thợ đã đến nơi, đang kiểm tra
-  IN_PROGRESS // Đã chốt báo giá, đang tiến hành sửa
-  COMPLETED // Hoàn thành (thợ xác nhận)
-  DONE // Alias cũ, giữ lại để tương thích
-  CANCELLED // Bị hủy
+  AI_CONSULTING
+  BROADCASTING
+  MATCHED
+  EN_ROUTE
+  ARRIVED
+  IN_PROGRESS
+  COMPLETED
+  DONE
+  CANCELLED
 }
 
 enum MessageType {
   TEXT
   IMAGE
-  VIDEO // Video gửi trong chat
-  QUOTE_CARD // Thẻ báo giá
-  SYSTEM_LOG // Tin nhắn hệ thống
+  VIDEO
+  QUOTE_CARD
+  SYSTEM_LOG
   QUOTE_RESPONSE
 }
 
@@ -50,39 +327,34 @@ enum SessionType {
 }
 
 enum QuoteStatus {
-  PENDING // Chờ khách duyệt
-  ACCEPTED // Khách đồng ý
-  REJECTED // Khách từ chối
-  SUPERSEDED // Bị thay thế bởi báo giá mới
-  CANCELLED // Thợ tự hủy
+  PENDING
+  ACCEPTED
+  REJECTED
+  SUPERSEDED
+  CANCELLED
 }
 
 enum AssignmentAction {
-  ASSIGNED // Thợ nhận đơn
-  UNASSIGNED // Thợ hủy đơn
-  REJECTED // Khách từ chối thợ
-  MANUAL_CANCEL // Thợ chủ động hủy
-  SYSTEM_AUTO_CANCEL // Hệ thống tự hủy sau 30 phút
+  ASSIGNED
+  UNASSIGNED
+  REJECTED
+  MANUAL_CANCEL
+  SYSTEM_AUTO_CANCEL
 }
 
-// ======================================================================
-// 2. BẢNG NGƯỜI DÙNG & THIẾT BỊ
-// ======================================================================
-
-// Enum phân quyền truy cập tài liệu RAG
 enum AccessLevel {
-  BASIC // Dành cho cả Khách hàng & Thợ (vệ sinh, kiểm tra phích cắm...)
-  ADVANCED // CHỈ dành cho Thợ có chuyên môn (tháo máy, sửa bo mạch...)
+  BASIC
+  ADVANCED
 }
 
 enum RagDocumentStatus {
-  UPLOADED // Đã tải lên, chờ hệ thống xử lý
-  PARSING // Đang phân tích và trích xuất nội dung từ file
-  CHUNKING // Đang chia nội dung thành các đoạn nhỏ
-  EMBEDDING // Đang tạo vector embedding cho từng chunk
-  READY // Đã xử lý xong, sẵn sàng dùng để truy xuất RAG
-  FAILED // Xử lý thất bại, cần xem errorMessage
-  ARCHIVED // Đã lưu trữ/ẩn, không còn dùng trong truy xuất mặc định
+  UPLOADED
+  PARSING
+  CHUNKING
+  EMBEDDING
+  READY
+  FAILED
+  ARCHIVED
 }
 
 enum RagFileType {
@@ -99,393 +371,10 @@ enum RagFileType {
 }
 
 enum RagDocumentKind {
-  TROUBLESHOOTING_GUIDE // Hướng dẫn xử lý lỗi
-  REPAIR_POLICY // Chính sách sửa chữa
-  PRICE_TABLE // Bảng giá
-  DEVICE_MANUAL // Hướng dẫn thiết bị
-  FAQ // Câu hỏi thường gặp
-  INTERNAL_NOTE // Ghi chú nội bộ
-}
-
-model User {
-  id          Int     @id @default(autoincrement())
-  phoneNumber String  @unique
-  password    String
-  fullName    String?
-  gender      Gender
-  email       String? @unique
-  avatarUrl   String?
-  address     String?
-  fcmToken    String?
-
-  // Social Login IDs
-  zaloId        String? @unique // ID Zalo (duy nhất, dùng cho đăng nhập Zalo)
-  googleId      String? @unique // ID Google (duy nhất, dùng cho đăng nhập Google)
-  needsPassword Boolean @default(false) // true khi user đăng ký qua Zalo/Google chưa đặt mật khẩu
-
-  role       UserRole @default(USER)
-  isVerified Boolean  @default(false)
-  isActive   Boolean  @default(true)
-  isOnline   Boolean  @default(false)
-  latitude   Float?
-  longitude  Float?
-
-  lastLogin DateTime?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-
-  // CÁC MỐI QUAN HỆ (RELATIONS)
-  devices              Device[]
-  chatSessions         ChatSession[]              @relation("CustomerSessions")
-  technicianSessions   ChatSession[]              @relation("TechnicianSessions")
-  sentMessages         Message[]                  @relation("SentMessages")
-  quotesCreated        Quote[]
-  assignmentHistories  SessionAssignmentHistory[]
-  reviewsGiven         Review[]                   @relation("UserReviews")
-  reviewsReceived      Review[]                   @relation("TechnicianReviews")
-  uploadedRagDocuments RagDocument[]
-
-  // ĐIỂM ĐÁNH GIÁ (Cache để truy vấn nhanh)
-  averageRating Float @default(0.0)
-  totalReviews  Int   @default(0)
-
-  @@map("users")
-}
-
-model Device {
-  id                     Int       @id @default(autoincrement())
-  category               String
-  brandName              String
-  modelCode              String?
-  location               String?
-  purchaseDate           DateTime?
-  warrantyMonths         Int?
-  maintenanceCycleMonths Int?
-  nextMaintenanceDate    DateTime?
-
-  userId Int
-  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  chatSessions ChatSession[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@map("devices")
-}
-
-// ======================================================================
-// 3. BẢNG QUẢN LÝ PHIÊN CHAT & SỬA CHỮA (TICKET/JOB)
-// ======================================================================
-model ChatSession {
-  id          Int     @id @default(autoincrement())
-  deviceType  String?
-  symptom     String?
-  aiSummary   String? @db.Text
-  isDangerous Boolean @default(false)
-
-  status      JobStatus   @default(AI_CONSULTING)
-  version     Int         @default(1) // Khóa lạc quan (Optimistic Locking)
-  sessionType SessionType @default(AI_DIAGNOSIS)
-
-  isHiddenByCustomer Boolean @default(false)
-
-  // Thông tin liên hệ và vị trí đơn sửa chữa
-  contactName  String?
-  contactPhone String?
-  address      String?
-  latitude     Float?
-  longitude    Float?
-
-  // Khách hàng tạo ca
-  userId Int
-  user   User @relation("CustomerSessions", fields: [userId], references: [id], onDelete: Cascade)
-
-  // Thiết bị liên quan
-  deviceId Int?
-  device   Device? @relation(fields: [deviceId], references: [id], onDelete: SetNull)
-
-  // Thợ được gán
-  technicianId Int?
-  technician   User? @relation("TechnicianSessions", fields: [technicianId], references: [id])
-
-  // Lịch sử, Tin nhắn, Báo giá, Đánh giá
-  messages            Message[]
-  quotes              Quote[]
-  assignmentHistories SessionAssignmentHistory[]
-  review              Review? // 1 đơn chỉ có 1 đánh giá
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@map("chat_sessions")
-}
-
-// ======================================================================
-// 4b. BẢNG ĐÁNH GIÁ (REVIEW)
-// ======================================================================
-model Review {
-  id           Int      @id @default(autoincrement())
-  sessionId    Int      @unique // 1 đơn chỉ có 1 Review
-  userId       Int // Khách hàng đánh giá
-  technicianId Int // Thợ được đánh giá
-  rating       Int // Số sao (1-5)
-  comment      String?  @db.Text
-  tags         String[] // ["Đúng giờ", "Nhiệt tình", "Giá hợp lý"]
-
-  createdAt DateTime @default(now())
-
-  session    ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  user       User        @relation("UserReviews", fields: [userId], references: [id])
-  technician User        @relation("TechnicianReviews", fields: [technicianId], references: [id])
-
-  @@map("reviews")
-}
-
-// ======================================================================
-// 4. CÁC BẢNG HỖ TRỢ (TIN NHẮN, BÁO GIÁ, LỊCH SỬ GÁN ĐƠN)
-// ======================================================================
-model Message {
-  id        Int         @id @default(autoincrement())
-  sessionId Int
-  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-
-  senderId Int?
-  sender   User? @relation("SentMessages", fields: [senderId], references: [id], onDelete: SetNull)
-
-  type     MessageType @default(TEXT)
-  content  String      @db.Text
-  metadata Json?
-
-  isRead    Boolean   @default(false)
-  isDeleted Boolean   @default(false)
-  deletedAt DateTime?
-
-  createdAt DateTime @default(now())
-
-  @@map("messages")
-}
-
-model Quote {
-  id        Int         @id @default(autoincrement())
-  sessionId Int
-  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-
-  technicianId Int
-  technician   User @relation(fields: [technicianId], references: [id], onDelete: Cascade)
-
-  title   String
-  amount  Float
-  status  QuoteStatus @default(PENDING)
-  version Int         @default(1)
-
-  parentQuoteId Int?
-
-  acceptedAt  DateTime?
-  rejectedAt  DateTime?
-  cancelledAt DateTime?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@map("quotes")
-}
-
-model SessionAssignmentHistory {
-  id Int @id @default(autoincrement())
-
-  chatSessionId Int
-  chatSession   ChatSession @relation(fields: [chatSessionId], references: [id], onDelete: Cascade)
-
-  technicianId Int
-  technician   User @relation(fields: [technicianId], references: [id], onDelete: Cascade)
-
-  action AssignmentAction // ASSIGNED, UNASSIGNED, REJECTED
-
-  createdAt DateTime @default(now())
-
-  @@map("session_assignment_history")
-}
-
-model AiReasoningLog {
-  id              Int                @id @default(autoincrement())
-  sessionId       Int?
-  userId          Int
-  userMsg         String             @db.Text
-  prevState       Json?
-  nextState       Json?
-  riskLevel       String?
-  aiResponse      String?            @db.Text
-  aiFeedback      String? // "LIKE" | "DISLIKE" | null
-  score           Int                @default(0)
-  deviceCategory  String? // Ví dụ: "Máy lạnh", "Tủ lạnh"
-  isGolden        Boolean            @default(false) // Cờ đánh dấu câu trả lời xuất sắc nhất
-  retrievedChunks AiRetrievedChunk[]
-  createdAt       DateTime           @default(now())
-
-  @@map("ai_reasoning_logs")
-}
-
-// ======================================================================
-// 6. BẢNG RAG / AI KNOWLEDGE BASE
-// ======================================================================
-model RagDocument {
-  id          Int     @id @default(autoincrement())
-  title       String
-  description String? @db.Text
-
-  // File gốc admin upload
-  originalFileName String?
-  storedFileName   String?
-  fileUrl          String?
-  storageKey       String?
-  mimeType         String?
-  fileType         RagFileType @default(UNKNOWN)
-  fileSizeBytes    BigInt?
-  checksum         String?
-
-  // Phân loại nghiệp vụ
-  kind      RagDocumentKind?
-  category  String?
-  brand     String?
-  modelCode String?
-  source    String?
-  tags      String[]
-
-  // Quyền truy cập
-  accessLevel AccessLevel @default(ADVANCED)
-
-  // Trạng thái xử lý file
-  status       RagDocumentStatus @default(UPLOADED)
-  errorMessage String?           @db.Text
-
-  // Thống kê sau khi import/index
-  totalChunks     Int @default(0)
-  totalCharacters Int @default(0)
-  totalTokens     Int @default(0)
-
-  // Version và trạng thái sử dụng
-  version  Int     @default(1)
-  isActive Boolean @default(true)
-
-  // Người upload
-  uploadedById Int?
-  uploadedBy   User? @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
-
-  // Quan hệ
-  chunks RagChunk[]
-
-  parsedAt  DateTime?
-  indexedAt DateTime?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-
-  @@index([status])
-  @@index([category])
-  @@index([brand])
-  @@index([kind])
-  @@index([accessLevel])
-  @@index([isActive])
-  @@index([uploadedById])
-  @@index([checksum])
-  @@map("rag_documents")
-}
-
-model RagChunk {
-  id Int @id @default(autoincrement())
-
-  documentId Int
-  document   RagDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
-
-  // Thứ tự chunk trong tài liệu
-  chunkIndex Int
-
-  // Nội dung chunk
-  title   String?
-  section String?
-  content String  @db.Text
-
-  // Vị trí trong file gốc
-  pageNumber Int?
-  sheetName  String?
-  rowIndex   Int?
-
-  // Metadata linh hoạt cho PDF/DOCX/XLSX/CSV
-  metadata Json?
-
-  // Lặp lại vài field để filter nhanh khi vector search
-  category    String?
-  brand       String?
-  modelCode   String?
-  tags        String[]
-  accessLevel AccessLevel @default(ADVANCED)
-
-  tokenCount Int?
-  charCount  Int?
-
-  // Vector embedding của chunk
-  // Chiều 768 dùng cho Google text-embedding-004 / embedding model tương thích 768 dimensions
-  embedding Unsupported("vector(768)")?
-
-  isActive Boolean @default(true)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  retrievedByLogs AiRetrievedChunk[]
-
-  @@unique([documentId, chunkIndex])
-  @@index([documentId])
-  @@index([category])
-  @@index([brand])
-  @@index([accessLevel])
-  @@index([isActive])
-  @@map("rag_chunks")
-}
-
-model AiRetrievedChunk {
-  id Int @id @default(autoincrement())
-
-  logId   Int
-  chunkId Int
-
-  // Điểm giống nhau khi vector search
-  score Float?
-
-  // Thứ hạng trong top kết quả truy xuất
-  rank Int?
-
-  log   AiReasoningLog @relation(fields: [logId], references: [id], onDelete: Cascade)
-  chunk RagChunk       @relation(fields: [chunkId], references: [id], onDelete: Cascade)
-
-  createdAt DateTime @default(now())
-
-  @@unique([logId, chunkId])
-  @@index([logId])
-  @@index([chunkId])
-  @@map("ai_retrieved_chunks")
-}
-
-// Legacy/deprecated: model này đang được code `src/rag` hiện tại sử dụng cho CRUD chunk thủ công.
-// Flow import file RAG mới phải dùng `RagDocument` + `RagChunk`.
-// Nếu hệ thống chưa có dữ liệu production và đã migrate code ứng dụng sang schema mới,
-// có thể xóa model này ở migration tiếp theo rồi chuyển dữ liệu cũ sang `rag_documents` / `rag_chunks`.
-model TechnicalDocument {
-  id          Int                         @id @default(autoincrement())
-  title       String // Tên / Chủ đề tài liệu (vd: "Máy lạnh không mát - Kiểm tra gas")
-  content     String                      @db.Text // Đoạn nội dung (chunk) đã được xử lý
-  category    String? // Loại thiết bị liên quan (vd: "Máy lạnh", "Tủ lạnh")
-  source      String? // Nguồn gốc tài liệu (vd: "Manual Daikin 2024", "Kỹ thuật viên nội bộ")
-  embedding   Unsupported("vector(768)")?
-  // Phân quyền: BASIC = khách & thợ đều xem được; ADVANCED = chỉ thợ
-  accessLevel AccessLevel                 @default(ADVANCED)
-
-  // Vector embedding — dùng pgvector extension (đã bật trên Neon)
-  // Chiều 768 tương thích với mô hình text-embedding-004 của Google
-  // embedding   Unsupported("vector(768)")? // Commented for local dev
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@map("technical_documents")
+  TROUBLESHOOTING_GUIDE
+  REPAIR_POLICY
+  PRICE_TABLE
+  DEVICE_MANUAL
+  FAQ
+  INTERNAL_NOTE
 }

@@ -191,7 +191,13 @@ export class ChatsService {
   // 4. HỆ THỐNG BÁO GIÁ (QUOTATION)
   async createQuote(sessionId: number, technicianId: number, dto: CreateQuoteDto) {
     const quote = await this.prisma.quote.create({
-      data: { sessionId, technicianId, title: dto.title, amount: dto.amount },
+      data: { 
+        sessionId, 
+        technicianId, 
+        title: dto.title, 
+        amount: dto.amount,
+        expectedTime: dto.expectedTime, // 👈 BẮT BUỘC THÊM DÒNG NÀY ĐỂ LƯU DB
+      },
     });
 
     const quoteMessage = await this.prisma.message.create({
@@ -200,7 +206,13 @@ export class ChatsService {
         senderId: technicianId,
         type: 'QUOTE_CARD',
         content: `Báo giá mới cho: ${dto.title}`,
-        metadata: { quoteId: quote.id, amount: dto.amount, title: dto.title, quoteStatus: 'PENDING' },
+        metadata: { 
+          quoteId: quote.id, 
+          amount: dto.amount, 
+          title: dto.title, 
+          expectedTime: dto.expectedTime, // 👈 Thêm vào metadata để Flutter dễ đọc nếu cần
+          quoteStatus: 'PENDING' 
+        },
       },
       include: { sender: { select: { id: true, fullName: true, avatarUrl: true, role: true } } },
     });

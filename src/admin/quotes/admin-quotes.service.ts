@@ -35,14 +35,12 @@ export class AdminQuotesService {
   }
 
   /** Chuẩn hóa trạng thái báo giá từ metadata message sang tập trạng thái mà FE admin đang dùng. */
-  private toLifecycleStatus(value?: QuoteStatus | null): QuoteLifecycleStatus {
+  private toLifecycleStatus(value?: QuoteStatus | string | null): QuoteLifecycleStatus {
     if (value === 'ACCEPTED' || value === 'REJECTED') {
-      return value;
+      return value as QuoteLifecycleStatus;
     }
-
     return 'PENDING';
   }
-
   /** Lấy toàn bộ chi tiết session cần thiết để bóc tách lịch sử báo giá đầy đủ. */
   private async getDetailedSessions(query: AdminChatQuery) {
     const sessions = await this.adminChatsService.getChats(query);

@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsNumber, Min } from 'class-validator';
+import { IsString, IsNotEmpty, IsNumber, Min, IsOptional } from 'class-validator';
 
 export class CreateQuoteDto {
   @IsString({ message: 'title phải là chuỗi' })
@@ -8,4 +8,7 @@ export class CreateQuoteDto {
   @IsNumber({}, { message: 'amount phải là số' })
   @Min(0, { message: 'amount phải >= 0' })
   amount: number;
+  @IsString()
+  @IsOptional()
+  expectedTime?: string;
 }
