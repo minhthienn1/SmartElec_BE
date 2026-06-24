@@ -389,6 +389,34 @@ export class ChatsController {
     return this.chatsService.redispatchJob(id, userId);
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // DELETE /chats/sessions/bulk  ← PHẢI ĐẶT TRƯỚC :id
+  // Xóa hàng loạt nhiều phiên AI theo danh sách ID
+  // Flutter gọi: PATCH /chats/sessions/hide-bulk → map sang route này
+  // ─────────────────────────────────────────────────────────────────
+  @Delete('sessions/bulk')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async deleteBulkSessions(
+    @Body('ids') ids: number[],
+    @Req() req,
+  ) {
+    const userId = Number(req.user.id || req.user.userId || req.user.sub);
+    return this.chatsService.deleteBulkUserSessions(userId, ids);
+  }
+
+  // Alias PATCH hide-bulk → gọi cùng service (tương thích Flutter)
+  @Patch('sessions/hide-bulk')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async hideBulkSessions(
+    @Body('ids') ids: number[],
+    @Req() req,
+  ) {
+    const userId = Number(req.user.id || req.user.userId || req.user.sub);
+    return this.chatsService.deleteBulkUserSessions(userId, ids);
+  }
+
   @Delete('sessions/:id')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)

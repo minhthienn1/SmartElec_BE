@@ -269,6 +269,29 @@ export class ChatsService {
       message: updatedMessage,
     });
 
+    // Bắn FCM cho Thợ
+    const sessionForTechFCM = await this.prisma.chatSession.findUnique({
+      where: { id: message.sessionId },
+      select: { technicianId: true },
+    });
+    if (sessionForTechFCM?.technicianId) {
+      const tech = await this.prisma.user.findUnique({ where: { id: sessionForTechFCM.technicianId }, select: { fcmToken: true } });
+      if (tech?.fcmToken) {
+        this.notificationsService.sendNotification({
+          token: tech.fcmToken,
+          title: status === 'ACCEPTED' ? '✅ Khách đã chốt giá!' : '❌ Khách từ chối báo giá',
+          body: status === 'ACCEPTED' ? 'Tuyệt vời, khách đã đồng ý! Bạn có thể bắt đầu làm.' : 'Khách hàng không đồng ý với mức giá này.',
+          channelId: 'job_alerts',
+          data: {
+            type: 'QUOTE_UPDATED',
+            sessionId: message.sessionId.toString(),
+            quoteStatus: status,
+            click_action: 'FLUTTER_NOTIFICATION_CLICK',
+          },
+        }).catch(err => this.logger.error(`FCM Lỗi Quote: ${err.message}`));
+      }
+    }
+
     return { quote, message: updatedMessage };
   }
 
@@ -388,6 +411,25 @@ export class ChatsService {
         technicianId,
         status: 'MATCHED',
       });
+
+      // 6. Gửi Push Notification cho Khách Hàng
+      const customer = await tx.user.findUnique({ where: { id: job.userId }, select: { fcmToken: true } });
+      const tech = await tx.user.findUnique({ where: { id: technicianId }, select: { fullName: true } });
+
+      if (customer?.fcmToken) {
+        this.notificationsService.sendNotification({
+          token: customer.fcmToken,
+          title: 'Thợ đã nhận đơn! 🎉',
+          body: `Thợ ${tech?.fullName || 'sửa chữa'} đã nhận đơn của bạn. Mở app để trao đổi nhé!`,
+          channelId: 'job_alerts',
+          data: {
+            type: 'JOB_ACCEPTED',
+            sessionId: sessionId.toString(),
+            technicianId: technicianId.toString(),
+            click_action: 'FLUTTER_NOTIFICATION_CLICK',
+          },
+        }).catch(err => this.logger.error(`Lỗi gửi FCM Khách Hàng (JOB_ACCEPTED): ${err.message}`));
+      }
 
       return { success: true, message: 'Nhận đơn thành công!' };
     });
@@ -559,9 +601,10 @@ export class ChatsService {
       );
     }
 
-    await this.prisma.chatSession.update({
+    const updatedSession = await this.prisma.chatSession.update({
       where: { id: sessionId },
       data: { status: 'COMPLETED' },
+      include: { user: { select: { fcmToken: true } } }
     });
 
     // Phát sự kiện vào phòng chat để khóa giao diện nhắn tin
@@ -570,6 +613,21 @@ export class ChatsService {
       status: 'COMPLETED',
       message: '🎉 Đơn hàng đã hoàn thành! Cảm ơn bạn đã sử dụng SmartElec.',
     });
+
+    if (updatedSession.user?.fcmToken) {
+      this.notificationsService.sendNotification({
+        token: updatedSession.user.fcmToken,
+        title: 'Hoàn thành sửa chữa! 🎉',
+        body: 'Đơn hàng đã xong, mời bạn đánh giá chất lượng dịch vụ.',
+        channelId: 'job_alerts',
+        data: {
+          type: 'JOB_STATUS_UPDATED',
+          status: 'COMPLETED',
+          sessionId: sessionId.toString(),
+          click_action: 'FLUTTER_NOTIFICATION_CLICK',
+        },
+      }).catch(err => this.logger.error(`FCM Lỗi: ${err.message}`));
+    }
 
     return { success: true, message: 'Xác nhận hoàn thành đơn thành công!' };
   }
@@ -717,6 +775,7 @@ export class ChatsService {
     const updatedSession = await this.prisma.chatSession.update({
       where: { id: sessionId },
       data: { status: 'EN_ROUTE' },
+      include: { user: { select: { fcmToken: true } }, technician: { select: { fullName: true } } }
     });
 
     // Thông báo cho khách biết thợ đang đến
@@ -725,6 +784,21 @@ export class ChatsService {
       status: 'EN_ROUTE',
       message: '🚀 Thợ đang trên đường di chuyển đến vị trí của bạn!',
     });
+
+    if (updatedSession.user?.fcmToken) {
+      this.notificationsService.sendNotification({
+        token: updatedSession.user.fcmToken,
+        title: 'Thợ đang đến!',
+        body: `Thợ ${updatedSession.technician?.fullName || ''} đang trên đường đến vị trí của bạn.`,
+        channelId: 'job_alerts',
+        data: {
+          type: 'JOB_STATUS_UPDATED',
+          status: 'EN_ROUTE',
+          sessionId: sessionId.toString(),
+          click_action: 'FLUTTER_NOTIFICATION_CLICK',
+        },
+      }).catch(err => this.logger.error(`FCM Lỗi: ${err.message}`));
+    }
 
     return updatedSession;
   }
@@ -748,6 +822,7 @@ export class ChatsService {
     const updatedSession = await this.prisma.chatSession.update({
       where: { id: sessionId },
       data: { status: 'ARRIVED' },
+      include: { user: { select: { fcmToken: true } } }
     });
 
     // Thông báo cho khách biết thợ đã đến
@@ -756,6 +831,21 @@ export class ChatsService {
       status: 'ARRIVED',
       message: '📍 Thợ đã đến vị trí của bạn! Vui lòng chuẩn bị để đón thợ.',
     });
+
+    if (updatedSession.user?.fcmToken) {
+      this.notificationsService.sendNotification({
+        token: updatedSession.user.fcmToken,
+        title: 'Thợ đã đến nơi!',
+        body: 'Thợ đã đến trước cửa, bạn chú ý điện thoại nhé!',
+        channelId: 'job_alerts',
+        data: {
+          type: 'JOB_STATUS_UPDATED',
+          status: 'ARRIVED',
+          sessionId: sessionId.toString(),
+          click_action: 'FLUTTER_NOTIFICATION_CLICK',
+        },
+      }).catch(err => this.logger.error(`FCM Lỗi: ${err.message}`));
+    }
 
     return updatedSession;
   }
@@ -943,7 +1033,6 @@ export class ChatsService {
 
   async deleteUserSession(userId: number, sessionId: number) {
     try {
-      // 1. Kiểm tra xem ca chẩn đoán này có đúng là của User này không
       const session = await this.prisma.chatSession.findFirst({
         where: { id: sessionId, userId: userId },
       });
@@ -952,12 +1041,10 @@ export class ChatsService {
         throw new NotFoundException('Dạ không tìm thấy ca chẩn đoán này ạ!');
       }
 
-      // 2. Xóa các log liên quan trong bảng aiReasoningLog trước (Tránh lỗi khóa ngoại Foreign Key)
       await this.prisma.aiReasoningLog.deleteMany({
         where: { sessionId: sessionId },
       });
 
-      // 3. Tiến hành xóa phiên chat chính
       await this.prisma.chatSession.delete({
         where: { id: sessionId },
       });
@@ -967,6 +1054,46 @@ export class ChatsService {
       this.logger.error(`Lỗi khi xóa session ${sessionId}:`, error);
       if (error instanceof NotFoundException) throw error;
       throw new InternalServerErrorException('Không thể xóa ca chẩn đoán.');
+    }
+  }
+
+  // Xóa hàng loạt nhiều phên AI theo danh sách ID
+  async deleteBulkUserSessions(userId: number, ids: number[]) {
+    if (!ids || ids.length === 0) {
+      return { success: true, deleted: 0 };
+    }
+    try {
+      // Chỉ xóa các session thuộc về userId này (bảo mật)
+      const sessions = await this.prisma.chatSession.findMany({
+        where: { id: { in: ids }, userId: userId },
+        select: { id: true },
+      });
+
+      const validIds = sessions.map(s => s.id);
+      if (validIds.length === 0) {
+        throw new NotFoundException('Không tìm thấy phiên nào thuộc về bạn.');
+      }
+
+      // Xóa log AI trước
+      await this.prisma.aiReasoningLog.deleteMany({
+        where: { sessionId: { in: validIds } },
+      });
+
+      // Xóa các message trong session
+      await this.prisma.message.deleteMany({
+        where: { sessionId: { in: validIds } },
+      });
+
+      // Xóa các session
+      const result = await this.prisma.chatSession.deleteMany({
+        where: { id: { in: validIds } },
+      });
+
+      return { success: true, deleted: result.count };
+    } catch (error) {
+      this.logger.error('Lỗi khi xóa hàng loạt session:', error);
+      if (error instanceof NotFoundException) throw error;
+      throw new InternalServerErrorException('Không thể xóa các ca chẩn đoán.');
     }
   }
 

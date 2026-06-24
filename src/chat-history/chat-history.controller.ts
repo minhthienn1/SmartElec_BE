@@ -22,6 +22,10 @@ class SaveHistoryDto {
   @IsString()
   @IsOptional()
   summary: string;
+
+  @IsString()
+  @IsOptional()
+  sessionType?: string;
 }
 
 @Controller('chats')
@@ -52,7 +56,7 @@ export class ChatHistoryController {
     }
 
     const userId = req.user.userId;
-    return this.chatHistoryService.saveSession(userId, body.title, body.summary);
+    return this.chatHistoryService.saveSession(userId, body.title, body.summary, undefined, body.sessionType as any);
   }
 
   /**
