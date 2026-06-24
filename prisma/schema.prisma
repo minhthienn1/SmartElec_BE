@@ -67,6 +67,8 @@ model Device {
 model ChatSession {
   id                  Int                        @id @default(autoincrement())
   deviceType          String?
+  brand               String?
+  modelCode           String?
   symptom             String?
   aiSummary           String?
   isDangerous         Boolean                    @default(false)

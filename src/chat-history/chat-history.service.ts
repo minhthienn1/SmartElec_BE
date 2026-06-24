@@ -11,8 +11,9 @@ export class ChatHistoryService {
    * @param title     - Tên thiết bị
    * @param summary   - Tóm tắt mới nhất từ AI
    * @param sessionId - (Tùy chọn) ID của phiên chat hiện tại nếu đã có
+   * @param sessionType - (Tùy chọn) Loại phiên chat (VD: DIRECT_BOOKING)
    */
-  async saveSession(userId: number, title: string, summary: string, sessionId?: number) {
+  async saveSession(userId: number, title: string, summary: string, sessionId?: number, sessionType?: 'AI_DIAGNOSIS' | 'DIRECT_BOOKING') {
     try {
       // 🟢 Nếu đã có sessionId truyền lên từ Flutter -> Tiến hành UPDATE
       if (sessionId) {
@@ -44,6 +45,7 @@ export class ChatHistoryService {
           deviceType: title,
           aiSummary: summary,
           symptom: summary,
+          sessionType: sessionType ?? 'AI_DIAGNOSIS',
         },
         select: {
           id: true,

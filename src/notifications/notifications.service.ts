@@ -1,9 +1,13 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import * as admin from 'firebase-admin';
 import * as path from 'path';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class NotificationsService implements OnModuleInit {
+  private readonly logger = new Logger(NotificationsService.name);
+
+  constructor(private readonly prisma: PrismaService) {}
   onModuleInit() {
     // Khởi tạo Firebase Admin
     // Ưu tiên tệp secret trên Render, nếu không có thì dùng tệp local
@@ -68,10 +72,28 @@ export class NotificationsService implements OnModuleInit {
 
     try {
       const response = await admin.messaging().send(message);
-      console.log('🚀 Gửi thông báo thành công:', response);
+      this.logger.log('🚀 Gửi thông báo thành công: ' + response);
       return { success: true, messageId: response };
-    } catch (error) {
-      console.error('❌ Lỗi gửi thông báo:', error);
+    } catch (error: any) {
+      this.logger.error(`❌ Lỗi gửi thông báo FCM: ${error.message}`);
+      
+      // Bắt lỗi Token chết hoặc sai định dạng để dọn rác Database
+      if (
+        error.code === 'messaging/registration-token-not-registered' ||
+        error.code === 'messaging/invalid-registration-token'
+      ) {
+        this.logger.warn(`🧹 Token không hợp lệ hoặc đã chết. Đang gỡ bỏ khỏi DB: ${token}`);
+        try {
+          await this.prisma.user.updateMany({
+            where: { fcmToken: token },
+            data: { fcmToken: null },
+          });
+          this.logger.log(`✅ Đã xóa token chết thành công.`);
+        } catch (dbError: any) {
+          this.logger.error(`❌ Lỗi khi xóa token chết: ${dbError.message}`);
+        }
+      }
+      
       throw error;
     }
   }
