@@ -21,22 +21,18 @@ export class TechnicianService {
           user: {
             select: { fullName: true, phoneNumber: true, avatarUrl: true }, 
           },
-          // Lấy review (không giới hạn field để FE đọc được rating và comment)
           review: true, 
-          // Lấy báo giá đã chấp nhận để FE đọc được amount và expectedTime
           quotes: {
             where: { status: 'ACCEPTED' },
             take: 1,
           },
-          // THÊM: Lấy thông tin thiết bị để FE hiển thị được tên máy (ví dụ: Tủ lạnh, Máy lạnh...)
           device: true, 
         },
         orderBy: {
-          updatedAt: 'desc', // Sắp xếp theo thời gian hoàn thành mới nhất
+          updatedAt: 'desc', 
         },
       });
 
-      // TRẢ VỀ NGUYÊN BẢN ARRAY JOBS ĐỂ FRONTEND TỰ BÓC TÁCH DỮ LIỆU
       return jobs;
 
     } catch (error: any) {

@@ -1097,4 +1097,48 @@ export class ChatsService {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // LỊCH SỬ SỬA CHỮA CỦA KHÁCH HÀNG
+  // ─────────────────────────────────────────────────────────────────
+  async getUserRepairHistory(userId: number) {
+    const sessions = await this.prisma.chatSession.findMany({
+      where: {
+        userId: userId, 
+        technicianId: { not: null },
+        status: { in: ['COMPLETED', 'DONE'] }, 
+      },
+      orderBy: { updatedAt: 'desc' },
+      include: {
+        technician: { 
+          select: { id: true, fullName: true, phoneNumber: true, averageRating: true } 
+        },
+        review: true, 
+        quotes: {
+          where: { status: 'ACCEPTED' } 
+        }
+      }
+    });
+
+    return sessions.map(session => {
+      const acceptedQuote = session.quotes.length > 0 ? session.quotes[0] : null;
+
+      return {
+        id: session.id.toString(),
+        title: session.deviceType || 'Sửa chữa thiết bị',
+        date: session.updatedAt.toISOString(),
+        chatSummary: session.aiSummary || 'Đã thống nhất giá và hoàn tất sửa chữa.',
+        status: session.status,
+        
+        mechanicName: session.technician?.fullName || 'Thợ sửa chữa',
+        mechanicPhone: session.technician?.phoneNumber || 'Chưa cập nhật',
+        
+        rating: session.review?.rating || session.technician?.averageRating || 5.0,
+        
+        reviewComment: session.review?.comment || null,
+        
+        agreedPrice: acceptedQuote ? `${acceptedQuote.amount.toLocaleString('vi-VN')} đ` : 'Chưa chốt giá',
+      };
+    });
+  }
+
 }
