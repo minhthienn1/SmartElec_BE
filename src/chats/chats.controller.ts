@@ -55,23 +55,16 @@ export class ChatsController {
   async getSessionById(@Param('id', ParseIntPipe) id: number, @Req() req) {
     const userId = Number(req.user.id || req.user.userId || req.user.sub);
     const session = await this.chatsService.getSessionById(id);
-
+    
     if (!session) {
       throw new NotFoundException('Không tìm thấy phiên chat này.');
     }
 
     // Kiểm tra quyền truy cập: Chỉ khách hàng hoặc thợ của phiên này mới được xem
     // Hoặc cho phép thợ xem khi đơn đang phát sóng (BROADCASTING) để họ xem chi tiết trước khi nhận
-    const isBroadcastToTech =
-      req.user.role === 'TECHNICIAN' && session.status === 'BROADCASTING';
-    if (
-      session.userId !== userId &&
-      session.technicianId !== userId &&
-      !isBroadcastToTech
-    ) {
-      throw new ForbiddenException(
-        'Bạn không có quyền truy cập thông tin phiên chat này.',
-      );
+    const isBroadcastToTech = req.user.role === 'TECHNICIAN' && session.status === 'BROADCASTING';
+    if (session.userId !== userId && session.technicianId !== userId && !isBroadcastToTech) {
+      throw new ForbiddenException('Bạn không có quyền truy cập thông tin phiên chat này.');
     }
 
     return session;
@@ -104,7 +97,10 @@ export class ChatsController {
   @UseGuards(JwtAuthGuard)
   @Post('technician/jobs/:id/cancel')
   @HttpCode(HttpStatus.OK)
-  async cancelJob(@Param('id', ParseIntPipe) id: number, @Req() req) {
+  async cancelJob(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req,
+  ) {
     const technicianId = Number(req.user.id || req.user.userId || req.user.sub);
     return this.chatsService.cancelJob(id, technicianId);
   }
@@ -116,7 +112,10 @@ export class ChatsController {
   @UseGuards(JwtAuthGuard)
   @Post('technician/jobs/:id/complete')
   @HttpCode(HttpStatus.OK)
-  async completeJob(@Param('id', ParseIntPipe) id: number, @Req() req) {
+  async completeJob(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req,
+  ) {
     const technicianId = Number(req.user.id || req.user.userId || req.user.sub);
     return this.chatsService.completeJob(id, technicianId);
   }
@@ -184,22 +183,14 @@ export class ChatsController {
     @Req() req,
   ) {
     if (!file) {
-      throw new BadRequestException(
-        'Không tìm thấy file. Vui lòng chọn file để gửi.',
-      );
+      throw new BadRequestException('Không tìm thấy file. Vui lòng chọn file để gửi.');
     }
 
     const allowedMimeTypes = [
-      'image/jpeg',
-      'image/png',
-      'image/webp',
-      'image/gif',
-      'image/heic',
-      'video/mp4',
-      'video/quicktime',
-      'video/x-matroska',
+      'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/heic',
+      'video/mp4', 'video/quicktime', 'video/x-matroska'
     ];
-
+    
     if (!allowedMimeTypes.includes(file.mimetype)) {
       throw new BadRequestException(
         `Loại file không hỗ trợ (${file.mimetype}). Chỉ chấp nhận: Ảnh (JPEG, PNG, WebP, HEIC) và Video (MP4, MOV, MKV).`,
@@ -217,9 +208,7 @@ export class ChatsController {
     const fileUrl = await this.uploadService.uploadFile(file, 'chat-media');
 
     // Xác định MessageType dựa vào mimetype
-    const type = file.mimetype.startsWith('video/')
-      ? MessageType.VIDEO
-      : MessageType.IMAGE;
+    const type = file.mimetype.startsWith('video/') ? MessageType.VIDEO : MessageType.IMAGE;
 
     const senderId = Number(req.user.id || req.user.userId || req.user.sub);
     const message = await this.chatsService.sendMessage(sessionId, senderId, {
@@ -255,11 +244,7 @@ export class ChatsController {
     }
 
     const userId = Number(req.user.id || req.user.userId || req.user.sub);
-    const { message } = await this.chatsService.updateQuoteStatus(
-      messageId,
-      userId,
-      status,
-    );
+    const { message } = await this.chatsService.updateQuoteStatus(messageId, userId, status);
 
     // Emit event socket tới phòng chat
     const roomName = `room_${message.sessionId}`;
@@ -283,10 +268,7 @@ export class ChatsController {
 
   @Patch(':id/read-all')
   @UseGuards(JwtAuthGuard)
-  async markAllAsRead(
-    @Param('id', ParseIntPipe) sessionId: number,
-    @Req() req,
-  ) {
+  async markAllAsRead(@Param('id', ParseIntPipe) sessionId: number, @Req() req) {
     const userId = Number(req.user.id || req.user.userId || req.user.sub);
     return this.chatsService.markAllAsRead(sessionId, userId);
   }
@@ -301,8 +283,7 @@ export class ChatsController {
   async bookTechnician(
     @Param('id', ParseIntPipe) sessionId: number,
     @Req() req,
-    @Body()
-    body: {
+    @Body() body: {
       contactName?: string;
       contactPhone?: string;
       address?: string;
@@ -311,15 +292,10 @@ export class ChatsController {
     },
   ) {
     const userId = Number(req.user?.id || req.user?.userId || req.user?.sub);
-    const session = await this.chatsService.bookTechnician(
-      sessionId,
-      userId,
-      body,
-    );
-
+    const session = await this.chatsService.bookTechnician(sessionId, userId, body);
+    
     return {
-      message:
-        'Đã chốt đơn thành công! Hệ thống đang phát sóng tìm thợ quanh khu vực của bạn.',
+      message: 'Đã chốt đơn thành công! Hệ thống đang phát sóng tìm thợ quanh khu vực của bạn.',
       data: session,
     };
   }
@@ -347,7 +323,10 @@ export class ChatsController {
   @Post('technician/jobs/:id/start-moving')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async startEnRoute(@Param('id', ParseIntPipe) id: number, @Req() req) {
+  async startEnRoute(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req,
+  ) {
     const technicianId = Number(req.user.id || req.user.userId || req.user.sub);
     return this.chatsService.startEnRoute(id, technicianId);
   }
@@ -359,9 +338,12 @@ export class ChatsController {
   @Post('technician/jobs/:id/start-repair')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async startRepair(@Param('id', ParseIntPipe) id: number, @Req() req) {
+  async startRepair(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req,
+  ) {
     const technicianId = Number(req.user.id || req.user.userId || req.user.sub);
-
+    
     // Gọi sang ChatsService để xử lý logic đổi status và emit socket
     return this.chatsService.startRepair(id, technicianId);
   }
@@ -369,7 +351,10 @@ export class ChatsController {
   @Post('technician/jobs/:id/arrived')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async confirmArrival(@Param('id', ParseIntPipe) id: number, @Req() req) {
+  async confirmArrival(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req,
+  ) {
     const technicianId = Number(req.user.id || req.user.userId || req.user.sub);
     return this.chatsService.confirmArrival(id, technicianId);
   }
@@ -381,7 +366,10 @@ export class ChatsController {
   @Post('user/jobs/:id/cancel')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async userCancelJob(@Param('id', ParseIntPipe) id: number, @Req() req) {
+  async userCancelJob(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req,
+  ) {
     const userId = Number(req.user.id || req.user.userId || req.user.sub);
     return this.chatsService.cancelJob(id, userId);
   }
@@ -393,7 +381,10 @@ export class ChatsController {
   @Post('user/jobs/:id/redispatch')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async redispatchJob(@Param('id', ParseIntPipe) id: number, @Req() req) {
+  async redispatchJob(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req,
+  ) {
     const userId = Number(req.user.id || req.user.userId || req.user.sub);
     return this.chatsService.redispatchJob(id, userId);
   }
@@ -406,8 +397,8 @@ export class ChatsController {
     @Req() req,
   ) {
     const userId = Number(req.user.id || req.user.userId || req.user.sub);
-
-    // Gọi sang hàm deleteUserSession ở chats.service.ts mà bạn vừa thêm
+    
     return this.chatsService.deleteUserSession(userId, sessionId);
   }
 }
+

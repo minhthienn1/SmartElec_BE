@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 
@@ -25,6 +25,22 @@ type ReasoningLogRecord = {
   deviceCategory: string | null;
   isGolden: boolean;
   createdAt: Date;
+  retrievedChunks?: Array<{
+    chunkId: number;
+    score: number | null;
+    rank: number | null;
+    chunk: {
+      documentId: number;
+      chunkIndex: number;
+      content: string;
+      document: {
+        title: string;
+      };
+    };
+  }>;
+  _count?: {
+    retrievedChunks: number;
+  };
 };
 
 @Injectable()
@@ -195,6 +211,19 @@ export class AdminAiReasoningLogsService {
       score: log.score,
       deviceCategory: log.deviceCategory,
       isGolden: log.isGolden,
+      retrievedChunkCount: log._count?.retrievedChunks ?? 0,
+      topRetrievedChunks: (log.retrievedChunks ?? []).map((item) => ({
+        chunkId: item.chunkId,
+        documentId: item.chunk.documentId,
+        documentTitle: item.chunk.document.title,
+        chunkIndex: item.chunk.chunkIndex,
+        score: item.score,
+        rank: item.rank,
+        contentPreview:
+          item.chunk.content.length > 180
+            ? `${item.chunk.content.slice(0, 180)}...`
+            : item.chunk.content,
+      })),
       createdAt: log.createdAt.toISOString(),
     };
   }
@@ -218,6 +247,32 @@ export class AdminAiReasoningLogsService {
         deviceCategory: true,
         isGolden: true,
         createdAt: true,
+        retrievedChunks: {
+          orderBy: { rank: 'asc' },
+          take: 2,
+          select: {
+            chunkId: true,
+            score: true,
+            rank: true,
+            chunk: {
+              select: {
+                documentId: true,
+                chunkIndex: true,
+                content: true,
+                document: {
+                  select: {
+                    title: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+        _count: {
+          select: {
+            retrievedChunks: true,
+          },
+        },
       },
     });
 
@@ -238,5 +293,63 @@ export class AdminAiReasoningLogsService {
     return logs
       .map((log) => this.mapLog(log, userMap, sessionMap))
       .filter((log) => this.matchesSearch(log, query.search));
+  }
+
+  async getRetrievedChunks(logId: number) {
+    const log = await this.prisma.aiReasoningLog.findUnique({
+      where: { id: logId },
+      select: { id: true },
+    });
+
+    if (!log) {
+      throw new NotFoundException(`Khong tim thay AI reasoning log voi ID = ${logId}`);
+    }
+
+    const chunks = await this.prisma.aiRetrievedChunk.findMany({
+      where: { logId },
+      orderBy: [{ rank: 'asc' }, { createdAt: 'asc' }],
+      select: {
+        id: true,
+        chunkId: true,
+        score: true,
+        rank: true,
+        chunk: {
+          select: {
+            documentId: true,
+            chunkIndex: true,
+            content: true,
+            category: true,
+            brand: true,
+            modelCode: true,
+            accessLevel: true,
+            document: {
+              select: {
+                title: true,
+                source: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    return {
+      logId,
+      chunks: chunks.map((item) => ({
+        id: item.id,
+        chunkId: item.chunkId,
+        documentId: item.chunk.documentId,
+        documentTitle: item.chunk.document.title,
+        chunkIndex: item.chunk.chunkIndex,
+        score: item.score,
+        rank: item.rank,
+        content: item.chunk.content,
+        category: item.chunk.category,
+        brand: item.chunk.brand,
+        modelCode: item.chunk.modelCode,
+        source: item.chunk.document.source,
+        accessLevel: item.chunk.accessLevel,
+      })),
+    };
   }
 }

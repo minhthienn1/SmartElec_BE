@@ -14,8 +14,8 @@ async function bootstrap() {
   });
 
   // Mở rộng giới hạn dung lượng để nhận được ảnh Base64 (AI Chat) - 10MB là đủ cho 1 tấm ảnh
-  app.use(json({ limit: '10mb' }));
-  app.use(urlencoded({ extended: true, limit: '10mb' }));
+  app.use(json({ limit: '50mb' }));
+  app.use(urlencoded({ extended: true, limit: '50mb' }));
 
   app.setGlobalPrefix('api'); // Thêm tiền tố 'api' cho tất cả các route
 
@@ -35,6 +35,6 @@ async function bootstrap() {
   const port = process.env.PORT || 3000;
 
   await app.listen(port, '0.0.0.0');
-  console.log(`🚀 Server is running on: http://localhost:${port}`);
+  console.log(`Server is running on: http://localhost:${port}`);
 }
 bootstrap();

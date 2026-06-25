@@ -1,4 +1,4 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, ParseIntPipe, Query, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { AdminAiReasoningLogsService } from './admin-ai-reasoning-logs.service';
 
@@ -27,5 +27,10 @@ export class AdminAiReasoningLogsController {
       scoreLevel,
       golden,
     });
+  }
+
+  @Get(':id/retrieved-chunks')
+  getRetrievedChunks(@Param('id', ParseIntPipe) id: number) {
+    return this.adminAiReasoningLogsService.getRetrievedChunks(id);
   }
 }
