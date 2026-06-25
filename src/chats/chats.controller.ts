@@ -428,5 +428,16 @@ export class ChatsController {
     
     return this.chatsService.deleteUserSession(userId, sessionId);
   }
+
+  // ─────────────────────────────────────────────────────────────────
+  // GET /chats/active/running
+  // Lấy danh sách các đơn đang hoạt động
+  // ─────────────────────────────────────────────────────────────────
+  @Get('user/history')
+  @UseGuards(JwtAuthGuard)
+  async getUserRepairHistory(@Req() req) {
+    const userId = Number(req.user.id || req.user.userId || req.user.sub);
+    return this.chatsService.getUserRepairHistory(userId);
+  }
 }
 
