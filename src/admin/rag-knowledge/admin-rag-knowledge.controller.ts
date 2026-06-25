@@ -24,6 +24,7 @@ import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { ArchiveRagDocumentDto } from '../../rag/dto/archive-rag-document.dto';
 import { ImportRagFileDto } from '../../rag/dto/import-rag-file.dto';
 import { IngestDocumentDto } from '../../rag/dto/ingest-document.dto';
+import { UpdateRagDocumentDto } from '../../rag/dto/update-rag-document.dto';
 import { RagDocumentChunksQueryDto } from '../../rag/dto/rag-document-chunks-query.dto';
 import {
   ALLOWED_RAG_IMPORT_EXTENSIONS,
@@ -182,7 +183,7 @@ export class AdminRagKnowledgeController {
   @Patch('documents/:id')
   updateDocument(
     @Param('id', ParseIntPipe) id: number,
-    @Body() dto: IngestDocumentDto,
+    @Body() dto: UpdateRagDocumentDto,
   ) {
     return this.adminRagKnowledgeService.updateDocument(id, dto);
   }

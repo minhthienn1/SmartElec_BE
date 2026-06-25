@@ -12,6 +12,7 @@ import { mapWithConcurrency } from './rag-batch.util';
 import { RAG_LIMITS } from './rag.constants';
 import { ArchiveRagDocumentDto } from './dto/archive-rag-document.dto';
 import { IngestDocumentDto } from './dto/ingest-document.dto';
+import { UpdateRagDocumentDto } from './dto/update-rag-document.dto';
 import { RagDocumentChunksQueryDto } from './dto/rag-document-chunks-query.dto';
 import { RagChunkingService } from './rag-chunking.service';
 import { RagEmbeddingService } from './rag-embedding.service';
@@ -684,7 +685,7 @@ export class RagService {
     };
   }
 
-  async updateDocument(id: number, dto: IngestDocumentDto) {
+  async updateDocument(id: number, dto: UpdateRagDocumentDto) {
     const existing = await this.prisma.ragDocument.findUnique({
       where: { id },
       select: { id: true },
@@ -694,72 +695,33 @@ export class RagService {
       throw new HttpException('Không tìm thấy tài liệu', HttpStatus.NOT_FOUND);
     }
 
-    const { title, content, category, source, accessLevel = 'ADVANCED' } = dto;
-    const textToEmbed = buildChunkEmbeddingText({
-      documentTitle: title,
-      category: category || null,
-      source: source || null,
+    const {
+      title,
+      description,
+      kind,
+      category,
+      brand,
+      modelCode,
+      source,
+      tags,
       accessLevel,
-      chunkTitle: title,
-      content,
-    });
-    const embeddingValues =
-      await this.ragEmbeddingService.generateEmbedding(textToEmbed);
-    const embeddingString =
-      this.ragEmbeddingService.toPgVector(embeddingValues);
-    const totalCharacters = content.length;
+    } = dto;
 
     try {
       const document = await this.prisma.$transaction(async (tx) => {
-        await tx.ragDocument.update({
+        // 1. Cập nhật RagDocument
+        const updatedDoc = await tx.ragDocument.update({
           where: { id },
           data: {
-            title,
-            category: category || null,
-            source: source || null,
-            accessLevel,
-            status: RagDocumentStatus.EMBEDDING,
-            totalCharacters,
-          },
-        });
-
-        const chunk = await tx.ragChunk.upsert({
-          where: {
-            documentId_chunkIndex: {
-              documentId: id,
-              chunkIndex: 0,
-            },
-          },
-          update: {
-            title,
-            content,
-            category: category || null,
-            accessLevel,
-            charCount: totalCharacters,
-            tokenCount: this.estimateTokenCount(content),
-          },
-          create: {
-            documentId: id,
-            chunkIndex: 0,
-            title,
-            content,
-            category: category || null,
-            accessLevel,
-            tags: [],
-            charCount: totalCharacters,
-            tokenCount: this.estimateTokenCount(content),
-          },
-        });
-
-        await this.updateChunkEmbedding(tx, chunk.id, embeddingString);
-
-        return tx.ragDocument.update({
-          where: { id },
-          data: {
-            status: RagDocumentStatus.READY,
-            totalChunks: 1,
-            totalCharacters,
-            indexedAt: new Date(),
+            ...(title !== undefined && { title }),
+            ...(description !== undefined && { description }),
+            ...(kind !== undefined && { kind }),
+            ...(category !== undefined && { category }),
+            ...(brand !== undefined && { brand }),
+            ...(modelCode !== undefined && { modelCode }),
+            ...(source !== undefined && { source }),
+            ...(tags !== undefined && { tags }),
+            ...(accessLevel !== undefined && { accessLevel }),
           },
           include: {
             chunks: {
@@ -769,17 +731,28 @@ export class RagService {
             },
           },
         });
+
+        // 2. Cập nhật đồng bộ các Chunk thuộc tài liệu này
+        await tx.ragChunk.updateMany({
+          where: { documentId: id },
+          data: {
+            ...(category !== undefined && { category }),
+            ...(brand !== undefined && { brand }),
+            ...(modelCode !== undefined && { modelCode }),
+            ...(tags !== undefined && { tags }),
+            ...(accessLevel !== undefined && { accessLevel }),
+          },
+        });
+
+        return updatedDoc;
       });
 
       return {
-        message: 'Tài liệu đã được cập nhật và vector hóa lại thành công',
+        message: 'Tài liệu đã được cập nhật thành công',
         document: this.mapDocumentForAdmin(document),
       };
     } catch (error) {
-      if (error instanceof HttpException) {
-        throw error;
-      }
-      this.logger.error('Lỗi khi cập nhật tài liệu RAG mới trong database:', error);
+      this.logger.error('Lỗi khi cập nhật tài liệu RAG:', error);
       throw new HttpException(
         'Không thể cập nhật tài liệu trong database',
         HttpStatus.INTERNAL_SERVER_ERROR,
