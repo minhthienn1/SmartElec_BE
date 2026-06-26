@@ -1,3 +1,7 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
+/* eslint-disable @typescript-eslint/no-unsafe-return */
+/* eslint-disable @typescript-eslint/no-unsafe-member-access */
+/* eslint-disable prettier/prettier */
 import {
   Controller,
   Get,
@@ -26,6 +30,7 @@ import { SendMessageDto } from './dto/send-message.dto';
 import { CreateQuoteDto } from './dto/create-quote.dto';
 import { MessageType } from '@prisma/client';
 import { ChatsGateway } from './chats.gateway';
+import { CreateChatSessionDto } from './dto/create-chat-session.dto';
 
 @Controller('chats')
 export class ChatsController {
@@ -42,8 +47,16 @@ export class ChatsController {
   @Get()
   @UseGuards(JwtAuthGuard)
   async getUserSessions(@Req() req) {
-    const userId = req.user.userId;
-    return this.chatsService.getUserSessions(userId);
+    const { userId, role } = getRequestUser(req);
+    return this.chatsService.getAccessibleUserSessions(userId, role);
+  }
+
+  @Post('sessions')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async createChatSession(@Req() req, @Body() dto: CreateChatSessionDto) {
+    const { userId } = getRequestUser(req);
+    return this.chatsService.createChatSession(userId, dto);
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -53,7 +66,8 @@ export class ChatsController {
   @Get(':id')
   @UseGuards(JwtAuthGuard)
   async getSessionById(@Param('id', ParseIntPipe) id: number, @Req() req) {
-    const userId = Number(req.user.id || req.user.userId || req.user.sub);
+    const { userId, role } = getRequestUser(req);
+    await this.chatsService.assertCanAccessSession(id, userId, role);
     const session = await this.chatsService.getSessionById(id);
     
     if (!session) {
@@ -125,15 +139,24 @@ export class ChatsController {
   // Lấy danh sách tin nhắn của phiên chat (Cursor-based Pagination)
   // ─────────────────────────────────────────────────────────────────
   @Get(':id/messages')
+  @UseGuards(JwtAuthGuard)
   async getMessages(
     @Param('id', ParseIntPipe) sessionId: number,
+    @Req() req,
     @Query('cursor') cursorRaw?: string,
     @Query('limit') limitRaw?: string,
   ) {
+    const { userId, role } = getRequestUser(req);
     const cursor = cursorRaw ? parseInt(cursorRaw, 10) : undefined;
     const limit = limitRaw ? parseInt(limitRaw, 10) : 20;
 
-    return this.chatsService.getMessages(sessionId, cursor, limit);
+    return this.chatsService.getMessagesForUser(
+      sessionId,
+      userId,
+      role,
+      cursor,
+      limit,
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -149,8 +172,13 @@ export class ChatsController {
     @Req() req,
     @Body() dto: SendMessageDto,
   ) {
-    const senderId = Number(req.user.id || req.user.userId || req.user.sub);
-    return this.chatsService.sendMessage(sessionId, senderId, dto);
+    const { userId, role } = getRequestUser(req);
+    return this.chatsService.processSessionMessage(
+      sessionId,
+      userId,
+      dto,
+      role,
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -165,7 +193,9 @@ export class ChatsController {
     @Req() req,
     @Body() dto: CreateQuoteDto,
   ) {
-    const technicianId = Number(req.user.id || req.user.userId || req.user.sub);
+    const { userId, role } = getRequestUser(req);
+    await this.chatsService.assertCanAccessSession(sessionId, userId, role);
+    const technicianId = userId;
     return this.chatsService.createQuote(sessionId, technicianId, dto);
   }
 
@@ -180,8 +210,25 @@ export class ChatsController {
   async uploadMediaMessage(
     @Param('id', ParseIntPipe) sessionId: number,
     @UploadedFile() file: Express.Multer.File,
+    @Body('deviceType') deviceType: string,
+    @Body('symptom') symptom: string,
     @Req() req,
   ) {
+    const { userId, role } = getRequestUser(req);
+    const deviceSwitchResult = await this.chatsService.detectDeviceSwitchForSession(
+      sessionId,
+      userId,
+      role,
+      {
+        deviceType,
+        content: file?.originalname,
+      },
+    );
+    if (deviceSwitchResult) {
+      return deviceSwitchResult;
+    }
+    await this.chatsService.assertCanAccessSession(sessionId, userId, role);
+
     if (!file) {
       throw new BadRequestException('Không tìm thấy file. Vui lòng chọn file để gửi.');
     }
@@ -197,7 +244,9 @@ export class ChatsController {
       );
     }
 
-    const maxSize = 50 * 1024 * 1024; // 50MB
+    const maxSize = file.mimetype.startsWith('video/')
+      ? 50 * 1024 * 1024
+      : 10 * 1024 * 1024;
     if (file.size > maxSize) {
       throw new BadRequestException(
         `File quá lớn (${(file.size / 1024 / 1024).toFixed(1)}MB). Tối đa: 50MB.`,
@@ -210,16 +259,17 @@ export class ChatsController {
     // Xác định MessageType dựa vào mimetype
     const type = file.mimetype.startsWith('video/') ? MessageType.VIDEO : MessageType.IMAGE;
 
-    const senderId = Number(req.user.id || req.user.userId || req.user.sub);
-    const message = await this.chatsService.sendMessage(sessionId, senderId, {
+    const message = await this.chatsService.processSessionMessage(sessionId, userId, {
       type: type,
       content: fileUrl,
+      deviceType: deviceType || undefined,
+      symptom: symptom || undefined,
       metadata: {
         fileName: file.originalname,
         fileSize: file.size,
         mimeType: file.mimetype,
       },
-    });
+    }, role);
 
     return {
       message: 'Gửi file thành công!',
@@ -262,15 +312,16 @@ export class ChatsController {
 
   @Patch('messages/:messageId/read')
   @UseGuards(JwtAuthGuard)
-  async markAsRead(@Param('messageId', ParseIntPipe) messageId: number) {
-    return this.chatsService.markAsRead(messageId);
+  async markAsRead(@Param('messageId', ParseIntPipe) messageId: number, @Req() req) {
+    const { userId, role } = getRequestUser(req);
+    return this.chatsService.markMessageAsReadForUser(messageId, userId, role);
   }
 
   @Patch(':id/read-all')
   @UseGuards(JwtAuthGuard)
   async markAllAsRead(@Param('id', ParseIntPipe) sessionId: number, @Req() req) {
-    const userId = Number(req.user.id || req.user.userId || req.user.sub);
-    return this.chatsService.markAllAsRead(sessionId, userId);
+    const { userId, role } = getRequestUser(req);
+    return this.chatsService.markAllAsReadForUser(sessionId, userId, role);
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -291,8 +342,13 @@ export class ChatsController {
       longitude?: number;
     },
   ) {
-    const userId = Number(req.user?.id || req.user?.userId || req.user?.sub);
-    const session = await this.chatsService.bookTechnician(sessionId, userId, body);
+    const { userId, role } = getRequestUser(req);
+    const session = await this.chatsService.bookTechnicianFromSession(
+      sessionId,
+      userId,
+      role,
+      body,
+    );
     
     return {
       message: 'Đã chốt đơn thành công! Hệ thống đang phát sóng tìm thợ quanh khu vực của bạn.',
@@ -396,9 +452,15 @@ export class ChatsController {
     @Param('id', ParseIntPipe) sessionId: number,
     @Req() req,
   ) {
-    const userId = Number(req.user.id || req.user.userId || req.user.sub);
-    
-    return this.chatsService.deleteUserSession(userId, sessionId);
+    const { userId, role } = getRequestUser(req);
+    return this.chatsService.deleteUserSessionSecure(userId, sessionId, role);
   }
+}
+
+function getRequestUser(req: any) {
+  return {
+    userId: Number(req.user?.id || req.user?.userId || req.user?.sub),
+    role: req.user?.role as string | undefined,
+  };
 }
 
