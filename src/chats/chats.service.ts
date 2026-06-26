@@ -414,6 +414,55 @@ export class ChatsService {
   // NHIỆM VỤ 1: CRON JOB - TỰ ĐỘNG HỦY ĐƠN SAU 30 PHÚT
   // ─────────────────────────────────────────────────────────────────
   private readonly BROADCAST_EXPIRE_MINUTES = 120; // Đổi thành 5 để demo
+  private readonly EMPTY_AI_SESSION_EXPIRE_HOURS = 3;
+
+  @Cron('0 */30 * * * *')
+  async handleDeleteIdleEmptyAiSessions() {
+    const expireTime = new Date(
+      Date.now() - this.EMPTY_AI_SESSION_EXPIRE_HOURS * 60 * 60 * 1000,
+    );
+
+    const staleSessions = await this.prisma.chatSession.findMany({
+      where: {
+        status: 'AI_CONSULTING',
+        technicianId: null,
+        updatedAt: { lt: expireTime },
+        messages: { none: {} },
+        quotes: { none: {} },
+        assignmentHistories: { none: {} },
+        review: { is: null },
+      },
+      select: { id: true },
+    });
+
+    if (staleSessions.length === 0) return;
+
+    const sessionIds = staleSessions.map((session) => session.id);
+    const activeLogSessionIds = new Set(
+      (
+        await this.prisma.aiReasoningLog.findMany({
+          where: { sessionId: { in: sessionIds } },
+          select: { sessionId: true },
+        })
+      )
+        .map((log) => log.sessionId)
+        .filter((sessionId): sessionId is number => sessionId != null),
+    );
+
+    const deletableSessionIds = sessionIds.filter(
+      (sessionId) => !activeLogSessionIds.has(sessionId),
+    );
+
+    if (deletableSessionIds.length === 0) return;
+
+    await this.prisma.chatSession.deleteMany({
+      where: { id: { in: deletableSessionIds } },
+    });
+
+    this.logger.log(
+      `[Cron] Đã xóa ${deletableSessionIds.length} session trống quá ${this.EMPTY_AI_SESSION_EXPIRE_HOURS} giờ không có tương tác.`,
+    );
+  }
 
   @Cron('0 */5 * * * *') // EVERY 5 MINUTES
   async handleExpireUnacceptedJobs() {

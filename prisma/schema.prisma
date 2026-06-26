@@ -93,6 +93,7 @@ enum RagFileType {
   CSV
   TXT
   MD
+
   HTML
   JSON
   UNKNOWN
