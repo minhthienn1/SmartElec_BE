@@ -36,10 +36,10 @@ import { RagModule } from './rag/rag.module';
       },
     }),
     ScheduleModule.forRoot(),
-    AuthModule, 
-    UsersModule, 
-    PrismaModule, 
-    ChatHistoryModule, 
+    AuthModule,
+    UsersModule,
+    PrismaModule,
+    ChatHistoryModule,
     DevicesModule,
     ChatsModule,
     UploadModule,
@@ -54,4 +54,3 @@ import { RagModule } from './rag/rag.module';
   providers: [AppService],
 })
 export class AppModule {}
-

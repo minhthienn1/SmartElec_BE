@@ -6,7 +6,11 @@ import { AdminDispatchController } from './admin-dispatch.controller';
 import { AdminDispatchService } from './admin-dispatch.service';
 
 @Module({
-  imports: [AdminChatsModule, AdminRepairSessionsModule, AdminTechniciansModule],
+  imports: [
+    AdminChatsModule,
+    AdminRepairSessionsModule,
+    AdminTechniciansModule,
+  ],
   controllers: [AdminDispatchController],
   providers: [AdminDispatchService],
 })

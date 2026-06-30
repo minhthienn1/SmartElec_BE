@@ -3,9 +3,15 @@ import { AdminAiReasoningLogsService } from '../ai-reasoning-logs/admin-ai-reaso
 import { AdminChatsService } from '../chats/admin-chats.service';
 import { AdminReviewsService } from '../reviews/admin-reviews.service';
 
-type AdminDangerousSession = Awaited<ReturnType<AdminChatsService['getChats']>>[number];
-type AdminReview = Awaited<ReturnType<AdminReviewsService['getReviews']>>[number];
-type AdminAiLog = Awaited<ReturnType<AdminAiReasoningLogsService['getLogs']>>[number];
+type AdminDangerousSession = Awaited<
+  ReturnType<AdminChatsService['getChats']>
+>[number];
+type AdminReview = Awaited<
+  ReturnType<AdminReviewsService['getReviews']>
+>[number];
+type AdminAiLog = Awaited<
+  ReturnType<AdminAiReasoningLogsService['getLogs']>
+>[number];
 
 @Injectable()
 export class AdminModerationService {
@@ -22,9 +28,13 @@ export class AdminModerationService {
       type: 'dangerous-session' as const,
       title: `Ca nguy hiểm SE-${session.id}`,
       subtitle:
-        session.user?.fullName?.trim() || session.contactName?.trim() || 'Khách hàng',
+        session.user?.fullName?.trim() ||
+        session.contactName?.trim() ||
+        'Khách hàng',
       description:
-        session.aiSummary?.trim() || session.symptom?.trim() || 'Chưa có mô tả sự cố',
+        session.aiSummary?.trim() ||
+        session.symptom?.trim() ||
+        'Chưa có mô tả sự cố',
       severity: 'critical' as const,
       createdAt: session.updatedAt,
       metadata: {
@@ -76,11 +86,12 @@ export class AdminModerationService {
 
   /** Tổng hợp hàng đợi moderation từ các nguồn dữ liệu admin đã có ở BE. */
   async getModerationQueue() {
-    const [dangerousSessions, negativeReviews, dislikedAiLogs] = await Promise.all([
-      this.adminChatsService.getChats({ isDangerous: 'true' }),
-      this.adminReviewsService.getReviews({ sentiment: 'NEGATIVE' }),
-      this.adminAiReasoningLogsService.getLogs({ feedback: 'DISLIKE' }),
-    ]);
+    const [dangerousSessions, negativeReviews, dislikedAiLogs] =
+      await Promise.all([
+        this.adminChatsService.getChats({ isDangerous: 'true' }),
+        this.adminReviewsService.getReviews({ sentiment: 'NEGATIVE' }),
+        this.adminAiReasoningLogsService.getLogs({ feedback: 'DISLIKE' }),
+      ]);
 
     const items = [
       ...dangerousSessions.map((item) => this.mapDangerousSession(item)),

@@ -7,22 +7,30 @@ export class NotificationsService implements OnModuleInit {
   onModuleInit() {
     // Khởi tạo Firebase Admin
     // Ưu tiên tệp secret trên Render, nếu không có thì dùng tệp local
-    let serviceAccountPath = path.join(process.cwd(), 'firebase-service-account.json');
-    
+    let serviceAccountPath = path.join(
+      process.cwd(),
+      'firebase-service-account.json',
+    );
+
     // Nếu không tìm thấy file Render (thường là khi chạy local), thử file local cũ
     const fs = require('fs');
     if (!fs.existsSync(serviceAccountPath)) {
       serviceAccountPath = path.join(process.cwd(), 'service-account.json');
     }
-    
+
     try {
       if (fs.existsSync(serviceAccountPath)) {
         admin.initializeApp({
           credential: admin.credential.cert(serviceAccountPath),
         });
-        console.log('✅ Firebase Admin initialized thành công từ:', path.basename(serviceAccountPath));
+        console.log(
+          '✅ Firebase Admin initialized thành công từ:',
+          path.basename(serviceAccountPath),
+        );
       } else {
-        console.warn('⚠️ Cảnh báo: Không tìm thấy tệp Firebase Service Account. Firebase Push sẽ không hoạt động.');
+        console.warn(
+          '⚠️ Cảnh báo: Không tìm thấy tệp Firebase Service Account. Firebase Push sẽ không hoạt động.',
+        );
       }
     } catch (error) {
       console.error('❌ Lỗi khởi tạo Firebase Admin:', error.message);
@@ -60,7 +68,8 @@ export class NotificationsService implements OnModuleInit {
         payload: {
           aps: {
             contentAvailable: true,
-            sound: channelId === 'job_alerts' ? 'emergency_alarm.wav' : 'default',
+            sound:
+              channelId === 'job_alerts' ? 'emergency_alarm.wav' : 'default',
           },
         },
       },

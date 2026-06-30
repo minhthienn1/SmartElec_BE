@@ -36,10 +36,13 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return;
       }
       const payload = await this.jwtService.verifyAsync(token);
-      client.data.userId = payload.sub;
-      const userRoom = `user_${payload.sub}`;
+      client.data.userId = payload.sub || payload.userId || payload.id;
+      client.data.role = payload.role;
+      const userRoom = `user_${client.data.userId}`;
       client.join(userRoom);
-      console.log(`⚡ [WS] User ${payload.sub} authenticated & joined ${userRoom}`);
+      console.log(
+        `⚡ [WS] User ${payload.sub} authenticated & joined ${userRoom}`,
+      );
     } catch (error) {
       client.disconnect();
     }
@@ -51,10 +54,22 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   @SubscribeMessage('join_room')
-  handleJoinRoom(
+  async handleJoinRoom(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { sessionId: number },
   ) {
+    try {
+      await this.chatsService.assertCanAccessSession(
+        data.sessionId,
+        client.data.userId,
+        client.data.role,
+      );
+    } catch (error) {
+      client.emit('error_message', {
+        message: error instanceof Error ? error.message : 'Không thể vào phòng chat.',
+      });
+      return;
+    }
     const roomName = `room_${data.sessionId}`;
     client.join(roomName);
     console.log(`🚪 [WS] User ${client.data.userId} joined ${roomName}`);
@@ -96,7 +111,7 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       // ✅ PRODUCTION FIX: Gửi tin nhắn đã lưu db ngay cho người gửi
       // Người gửi ngay lập tức nhận được message đã có ID thật từ DB
-      const savedMessage = await this.chatsService.sendMessage(
+      const savedMessage = await this.chatsService.processSessionMessage(
         data.sessionId,
         userId,
         {
@@ -104,10 +119,19 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
           content: data.content,
           metadata: data.metadata,
         },
+        client.data.role,
         client.id, // ← ChatsService sẽ dùng client.id để loại trừ người gửi khi emit broadcast
       );
 
       // Trả về confirmation cho client
+      if (
+        'deviceSwitchDetected' in savedMessage &&
+        savedMessage.deviceSwitchDetected
+      ) {
+        client.emit('device_switch_detected', savedMessage);
+        return { event: 'device_switch_detected', data: savedMessage };
+      }
+
       client.emit('message_delivered', {
         tempId: data.metadata?.tempId, // Frontend gửi kèm ID tạm để match
         savedMessage: savedMessage,
@@ -116,7 +140,8 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       // Cập nhật inbox cho đối phương
       const session = await this.chatsService.getSessionById(data.sessionId);
       if (session) {
-        const recipientId = userId === session.userId ? session.technicianId : session.userId;
+        const recipientId =
+          userId === session.userId ? session.technicianId : session.userId;
         if (recipientId) {
           this.server.to(`user_${recipientId}`).emit('inbox_update', {
             sessionId: data.sessionId,
@@ -139,7 +164,16 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     try {
       const userId = client.data.userId as number;
-      const updatedMessage = await this.chatsService.markAsRead(data.messageId);
+      await this.chatsService.assertCanAccessSession(
+        data.sessionId,
+        userId,
+        client.data.role,
+      );
+      const updatedMessage = await this.chatsService.markMessageAsReadForUser(
+        data.messageId,
+        userId,
+        client.data.role,
+      );
       this.server.to(`room_${data.sessionId}`).emit('message_read', {
         messageId: data.messageId,
         readBy: userId,

@@ -12,7 +12,12 @@ export class ChatHistoryService {
    * @param summary   - Tóm tắt mới nhất từ AI
    * @param sessionId - (Tùy chọn) ID của phiên chat hiện tại nếu đã có
    */
-  async saveSession(userId: number, title: string, summary: string, sessionId?: number) {
+  async saveSession(
+    userId: number,
+    title: string,
+    summary: string,
+    sessionId?: number,
+  ) {
     try {
       // 🟢 Nếu đã có sessionId truyền lên từ Flutter -> Tiến hành UPDATE
       if (sessionId) {
@@ -80,7 +85,7 @@ export class ChatHistoryService {
           aiSummary: true,
           createdAt: true,
           symptom: true, // ➕ Lấy vấn đề để Flutter hiện lên Card
-          status: true,  // ➕ Lấy trạng thái để Flutter đổi màu
+          status: true, // ➕ Lấy trạng thái để Flutter đổi màu
         },
       });
     } catch (error) {

@@ -61,18 +61,29 @@ export class AdminQuotesService {
   }
 
   /** Dựng lịch sử thao tác của một báo giá từ chuỗi message cùng quoteId. */
-  private buildHistory(messages: AdminChatSession['messages'], quoteId: number) {
+  private buildHistory(
+    messages: AdminChatSession['messages'],
+    quoteId: number,
+  ) {
     return (messages ?? [])
-      .filter((message) => Number(this.asMetadata(message.metadata).quoteId) === quoteId)
+      .filter(
+        (message) =>
+          Number(this.asMetadata(message.metadata).quoteId) === quoteId,
+      )
       .map((message) => {
         const metadata = this.asMetadata(message.metadata);
 
         return {
           id: String(message.id),
-          action: metadata.quoteStatus ? `QUOTE_${String(metadata.quoteStatus)}` : message.type,
-        actor: message.sender?.fullName?.trim() || message.sender?.role || 'Hệ thống',
-        at: message.createdAt,
-        note: message.content,
+          action: metadata.quoteStatus
+            ? `QUOTE_${String(metadata.quoteStatus)}`
+            : message.type,
+          actor:
+            message.sender?.fullName?.trim() ||
+            message.sender?.role ||
+            'Hệ thống',
+          at: message.createdAt,
+          note: message.content,
         };
       })
       .sort((left, right) => right.at.localeCompare(left.at));
@@ -106,7 +117,9 @@ export class AdminQuotesService {
       );
       const waitingMinutes = Math.max(
         0,
-        Math.round((Date.now() - new Date(message.createdAt).getTime()) / 60000),
+        Math.round(
+          (Date.now() - new Date(message.createdAt).getTime()) / 60000,
+        ),
       );
       const sessionStatus = session.status;
       const isCurrentQuote = index === quoteMessages.length - 1;
@@ -120,13 +133,19 @@ export class AdminQuotesService {
       return {
         id: `Q-${quoteId}`,
         sessionId: String(session.id),
-        technicianId: session.technicianId != null ? String(session.technicianId) : '',
+        technicianId:
+          session.technicianId != null ? String(session.technicianId) : '',
         customerName:
-          session.user?.fullName?.trim() || session.contactName?.trim() || 'Khách hàng',
+          session.user?.fullName?.trim() ||
+          session.contactName?.trim() ||
+          'Khách hàng',
         customerPhone: session.contactPhone?.trim() || '--',
         technicianName: session.technician?.fullName?.trim() || '--',
-        deviceName: String(metadata.contextDevice || session.deviceType || '--'),
-        issueSummary: session.symptom?.trim() || session.aiSummary?.trim() || '--',
+        deviceName: String(
+          metadata.contextDevice || session.deviceType || '--',
+        ),
+        issueSummary:
+          session.symptom?.trim() || session.aiSummary?.trim() || '--',
         totalAmount,
         currency: 'VND' as const,
         status,
@@ -188,9 +207,14 @@ export class AdminQuotesService {
 
     const minAmount = Number(query.minAmount);
     const maxAmount = Number(query.maxAmount);
-    if (Number.isFinite(minAmount) && item.totalAmount < minAmount) return false;
-    if (Number.isFinite(maxAmount) && item.totalAmount > maxAmount) return false;
-    if (query.isOverdue === 'true' && !(item.isOverdueLv1 || item.isOverdueLv2)) {
+    if (Number.isFinite(minAmount) && item.totalAmount < minAmount)
+      return false;
+    if (Number.isFinite(maxAmount) && item.totalAmount > maxAmount)
+      return false;
+    if (
+      query.isOverdue === 'true' &&
+      !(item.isOverdueLv1 || item.isOverdueLv2)
+    ) {
       return false;
     }
     if (query.isMismatch === 'true' && !item.isStateMismatch) return false;

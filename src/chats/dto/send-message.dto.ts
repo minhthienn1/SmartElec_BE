@@ -5,6 +5,7 @@ import {
   IsOptional,
   IsObject,
 } from 'class-validator';
+import { Transform } from 'class-transformer';
 import { MessageType } from '@prisma/client';
 
 export class SendMessageDto {
@@ -16,11 +17,20 @@ export class SendMessageDto {
 
   @IsString({ message: 'content phải là chuỗi' })
   @IsNotEmpty({ message: 'content không được để trống' })
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   content?: string;
 
   @IsOptional()
   @IsObject({ message: 'metadata phải là một object' })
   metadata?: Record<string, any>;
 
+  @IsOptional()
+  @IsString({ message: 'deviceType phải là chuỗi' })
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   deviceType?: string;
+
+  @IsOptional()
+  @IsString({ message: 'symptom phải là chuỗi' })
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  symptom?: string;
 }
