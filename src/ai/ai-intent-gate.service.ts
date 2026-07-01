@@ -429,8 +429,13 @@ export class AiIntentGateService {
       this.includesAnyPhrase(expandedText, [
         'laptop',
         'latop',
+        'notebook',
+        'may tinh',
         'may tinh xach tay',
+        'acer nitro',
         'ban phim laptop',
+        'loi ban phim',
+        'khong nhan phim',
         'liet phim',
       ])
     ) {
@@ -524,6 +529,8 @@ export class AiIntentGateService {
         'rung lac',
         'mat nguon',
         'liet phim',
+        'khong nhan phim',
+        'loi ban phim',
         'disconnect',
         'chap chon',
       ]);
@@ -649,6 +656,7 @@ export class AiIntentGateService {
       [['mui khet'], 'Có mùi khét'],
       [['boc khoi'], 'Bốc khói'],
       [['liet phim', 'ban phim liet'], 'Liệt phím'],
+      [['khong nhan phim', 'loi ban phim', 'phim khong nhan'], 'Lỗi bàn phím'],
       [['disconnect', 'chap chon'], 'Chập chờn/disconnect'],
     ];
 
@@ -747,9 +755,9 @@ export class AiIntentGateService {
     if (intent === 'OUT_OF_SCOPE_TECHNICAL') {
       if (outOfScopeDeviceCategory === 'LAPTOP') {
         return [
-          'Hiện tại SmartElec chủ yếu hỗ trợ thiết bị điện gia dụng như máy lạnh, máy giặt, tủ lạnh và thiết bị điện trong nhà.',
-          'Với lỗi bàn phím laptop bị liệt/chập chờn, bạn có thể thử kiểm tra bằng bàn phím rời, khởi động vào BIOS để test phím, kiểm tra driver bàn phím và vệ sinh nhẹ khu vực phím.',
-          'Nếu lỗi vẫn lúc được lúc không, khả năng có thể liên quan đến cáp phím hoặc cụm bàn phím, bạn nên mang tới kỹ thuật viên laptop để kiểm tra phần cứng.',
+          `Mình hiểu bạn đang gặp vấn đề với ${detectedDeviceLabel?.toLowerCase() || 'laptop'}${detectedIssueLabel ? `, cụ thể là ${detectedIssueLabel.toLowerCase()}` : ''}.`,
+          'SmartElec hiện không chuyên sửa laptop, nhưng mình vẫn có thể giúp bạn ghi nhận thông tin cho đủ và gợi ý hướng kiểm tra an toàn trước khi mang máy đi kiểm tra.',
+          'Bạn cho mình thêm 3 ý ngắn nhé: model máy nếu có, cụm phím nào bị liệt hoặc không nhận, và lỗi xảy ra liên tục hay chỉ thỉnh thoảng.',
         ].join(' ');
       }
 
@@ -785,7 +793,7 @@ export class AiIntentGateService {
 
       return [
         knownText,
-        'Bạn mô tả thêm giúp mình thiết bị là loại gì, thương hiệu/model nếu có, hiện tượng lỗi cụ thể, lỗi xảy ra từ khi nào và có mã lỗi nào hiển thị không nhé.',
+        'Bạn mô tả thêm giúp mình theo 3 ý ngắn: thiết bị là loại gì, lỗi cụ thể đang gặp là gì, và lỗi xảy ra liên tục hay chỉ thỉnh thoảng nhé.',
       ]
         .join('')
         .trim();

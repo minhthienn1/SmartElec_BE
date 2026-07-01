@@ -10,6 +10,32 @@ export class AiGuidedDiagnosisService {
     }): { shouldAskStepByStep: boolean; parsedResponse: any | null } {
         const currentFlow = input.prevState?.diagnosisFlow;
 
+        if (
+            currentFlow?.mode === 'GUIDED_DIAGNOSIS' &&
+            currentFlow?.nextAction === 'SUGGEST_BOOKING'
+        ) {
+            const normalizedText = (input.originalText || '')
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .toLowerCase()
+                .trim();
+
+            if (/^(co|co giup toi voi|giup toi voi|ok|dong y|dat tho giup toi|goi tho giup toi)$/.test(normalizedText)) {
+                return {
+                    shouldAskStepByStep: false,
+                    parsedResponse: {
+                        text: 'Mình đã ghi nhận bạn đồng ý tạo yêu cầu đặt thợ.\n\nMình sẽ chuyển sang bước đặt lịch để bạn điền thông tin liên hệ và thời gian mong muốn.',
+                        state: {
+                            ...input.prevState,
+                            phase: 'READY_TO_BOOK',
+                            diagnosisFlow: { ...currentFlow, nextAction: 'END' },
+                        },
+                        is_booking_triggered: true,
+                    },
+                };
+            }
+        }
+
         if (currentFlow?.mode === 'GUIDED_DIAGNOSIS') {
             return this.continueFlow(input);
         }
@@ -73,7 +99,7 @@ export class AiGuidedDiagnosisService {
                 text: [
                     'Mình sẽ kiểm tra theo từng bước để tránh đoán sai.',
                     '',
-                    `**Bước 1:** ${firstQuestion}`,
+                    `Bước 1: ${firstQuestion}`,
                 ].join('\n'),
                 state: {
                     ...(input.prevState || {}),
@@ -158,7 +184,7 @@ export class AiGuidedDiagnosisService {
                 text: [
                     'Mình đã ghi nhận thông tin bạn vừa cung cấp.',
                     '',
-                    `**Bước ${nextStep}:** ${nextQuestion}`,
+                    `Bước ${nextStep}: ${nextQuestion}`,
                 ].join('\n'),
                 state: {
                     ...input.prevState,
