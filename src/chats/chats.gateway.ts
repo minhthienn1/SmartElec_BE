@@ -22,27 +22,43 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
 
+  private messageRateLimit = new Map<
+    number,
+    { count: number; startTime: number }
+  >();
+
   constructor(
     @Inject(forwardRef(() => ChatsService))
     private readonly chatsService: ChatsService,
     private readonly jwtService: JwtService,
-  ) {}
+  ) { }
 
   async handleConnection(client: Socket) {
     try {
       const token = client.handshake.auth?.token as string;
+
       if (!token) {
         client.disconnect();
         return;
       }
+
       const payload = await this.jwtService.verifyAsync(token);
-      client.data.userId = payload.sub || payload.userId || payload.id;
+
+      const rawUserId = payload.sub || payload.userId || payload.id;
+      const userId = Number(rawUserId);
+
+      if (!userId || Number.isNaN(userId)) {
+        client.disconnect();
+        return;
+      }
+
+      client.data.userId = userId;
       client.data.role = payload.role;
-      const userRoom = `user_${client.data.userId}`;
+
+      const userRoom = `user_${userId}`;
       client.join(userRoom);
-      console.log(
-        `⚡ [WS] User ${payload.sub} authenticated & joined ${userRoom}`,
-      );
+
+      console.log(`⚡ [WS] User ${userId} authenticated & joined ${userRoom}`);
     } catch (error) {
       client.disconnect();
     }
@@ -64,16 +80,24 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         client.data.userId,
         client.data.role,
       );
-    } catch (error) {
+
+      const roomName = `room_${data.sessionId}`;
+      client.join(roomName);
+
+      console.log(`🚪 [WS] User ${client.data.userId} joined ${roomName}`);
+
+      return {
+        event: 'joined_room',
+        data: {
+          sessionId: data.sessionId,
+        },
+      };
+    } catch (error: any) {
       client.emit('error_message', {
-        message: error instanceof Error ? error.message : 'Không thể vào phòng chat.',
+        message:
+          error instanceof Error ? error.message : 'Không thể vào phòng chat.',
       });
-      return;
     }
-    const roomName = `room_${data.sessionId}`;
-    client.join(roomName);
-    console.log(`🚪 [WS] User ${client.data.userId} joined ${roomName}`);
-    return { event: 'joined_room', data: { sessionId: data.sessionId } };
   }
 
   @SubscribeMessage('leave_room')
@@ -83,7 +107,13 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     const roomName = `room_${data.sessionId}`;
     client.leave(roomName);
-    return { event: 'left_room', data: { sessionId: data.sessionId } };
+
+    return {
+      event: 'left_room',
+      data: {
+        sessionId: data.sessionId,
+      },
+    };
   }
 
   emitToRoom(sessionId: number, event: string, data: any) {
@@ -92,6 +122,33 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   emitGlobal(event: string, data: any) {
     this.server.emit(event, data);
+  }
+
+  private checkMessageRateLimit(client: Socket, userId: number): boolean {
+    const now = Date.now();
+
+    const userLimit = this.messageRateLimit.get(userId) || {
+      count: 0,
+      startTime: now,
+    };
+
+    if (now - userLimit.startTime > 1000) {
+      userLimit.count = 1;
+      userLimit.startTime = now;
+    } else {
+      userLimit.count++;
+
+      if (userLimit.count > 5) {
+        client.emit('error_message', {
+          message: 'Bạn nhắn tin quá nhanh. Vui lòng thử lại sau.',
+        });
+
+        return false;
+      }
+    }
+
+    this.messageRateLimit.set(userId, userLimit);
+    return true;
   }
 
   @SubscribeMessage('send_message')
@@ -107,10 +164,20 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     try {
       const userId = client.data.userId as number;
-      const roomName = `room_${data.sessionId}`;
 
-      // ✅ PRODUCTION FIX: Gửi tin nhắn đã lưu db ngay cho người gửi
-      // Người gửi ngay lập tức nhận được message đã có ID thật từ DB
+      if (!userId) {
+        client.emit('error_message', {
+          message: 'Bạn chưa đăng nhập hoặc phiên đăng nhập đã hết hạn.',
+        });
+        return;
+      }
+
+      const isAllowed = this.checkMessageRateLimit(client, userId);
+
+      if (!isAllowed) {
+        return;
+      }
+
       const savedMessage = await this.chatsService.processSessionMessage(
         data.sessionId,
         userId,
@@ -120,28 +187,34 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
           metadata: data.metadata,
         },
         client.data.role,
-        client.id, // ← ChatsService sẽ dùng client.id để loại trừ người gửi khi emit broadcast
+        client.id,
       );
 
-      // Trả về confirmation cho client
       if (
+        savedMessage &&
+        typeof savedMessage === 'object' &&
         'deviceSwitchDetected' in savedMessage &&
         savedMessage.deviceSwitchDetected
       ) {
         client.emit('device_switch_detected', savedMessage);
-        return { event: 'device_switch_detected', data: savedMessage };
+
+        return {
+          event: 'device_switch_detected',
+          data: savedMessage,
+        };
       }
 
       client.emit('message_delivered', {
-        tempId: data.metadata?.tempId, // Frontend gửi kèm ID tạm để match
-        savedMessage: savedMessage,
+        tempId: data.metadata?.tempId,
+        savedMessage,
       });
 
-      // Cập nhật inbox cho đối phương
       const session = await this.chatsService.getSessionById(data.sessionId);
+
       if (session) {
         const recipientId =
           userId === session.userId ? session.technicianId : session.userId;
+
         if (recipientId) {
           this.server.to(`user_${recipientId}`).emit('inbox_update', {
             sessionId: data.sessionId,
@@ -150,10 +223,18 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         }
       }
 
-      return { event: 'message_sent', data: savedMessage };
-    } catch (error) {
-      console.error('❌ Lỗi gửi tin nhắn:', error.message);
-      client.emit('error_message', { message: error.message });
+      return {
+        event: 'message_sent',
+        data: savedMessage,
+      };
+    } catch (error: any) {
+      console.warn(
+        `⚠️ [WS Blocked] User ${client.data.userId}: ${error.message}`,
+      );
+
+      client.emit('error_message', {
+        message: error.message || 'Không thể gửi tin nhắn.',
+      });
     }
   }
 
@@ -164,24 +245,33 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     try {
       const userId = client.data.userId as number;
+
       await this.chatsService.assertCanAccessSession(
         data.sessionId,
         userId,
         client.data.role,
       );
+
       const updatedMessage = await this.chatsService.markMessageAsReadForUser(
         data.messageId,
         userId,
         client.data.role,
       );
+
       this.server.to(`room_${data.sessionId}`).emit('message_read', {
         messageId: data.messageId,
         readBy: userId,
         readAt: new Date().toISOString(),
       });
-      return { event: 'mark_as_read_success', data: updatedMessage };
-    } catch (error) {
-      client.emit('error_message', { message: error.message });
+
+      return {
+        event: 'mark_as_read_success',
+        data: updatedMessage,
+      };
+    } catch (error: any) {
+      client.emit('error_message', {
+        message: error.message || 'Không thể đánh dấu đã đọc.',
+      });
     }
   }
 }

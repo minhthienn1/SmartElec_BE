@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
 import { BullModule } from '@nestjs/bullmq';
 import { AppController } from './app.controller';
@@ -17,6 +18,7 @@ import { MechanicAiModule } from './mechanic-ai/mechanic-ai.module';
 import { JobsModule } from './jobs/jobs.module';
 import { AdminModule } from './admin/admin.module';
 import { RagModule } from './rag/rag.module';
+import { TechnicianModule } from './technician/technician.module';
 
 @Module({
   imports: [
@@ -36,6 +38,15 @@ import { RagModule } from './rag/rag.module';
       },
     }),
     ScheduleModule.forRoot(),
+    ThrottlerModule.forRoot([{
+      name: 'ai_chat',
+      ttl: 3000,
+      limit: 1,
+    }, {
+      name: 'normal_chat',
+      ttl: 1000,
+      limit: 5,
+    }]),
     AuthModule,
     UsersModule,
     PrismaModule,
@@ -49,8 +60,9 @@ import { RagModule } from './rag/rag.module';
     RagModule,
     JobsModule,
     AdminModule,
+    TechnicianModule,
   ],
   controllers: [AppController],
   providers: [AppService],
 })
-export class AppModule {}
+export class AppModule { }

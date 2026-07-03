@@ -192,11 +192,17 @@ export class JobDispatchProcessor extends WorkerHost {
       });
 
       if (session.user.fcmToken) {
-        await this.notificationsService.sendTestNotification(
-          session.user.fcmToken,
-          'Rất tiếc! 😔',
-          'Hiện tại các thợ đều đang bận. Đơn hàng của bạn đã bị hủy tự động sau 10 phút. Vui lòng thử lại sau nhé!',
-        );
+        await this.notificationsService.sendNotification({
+          token: session.user.fcmToken,
+          title: 'Rất tiếc! 😔',
+          body: 'Hiện tại các thợ đều đang bận. Đơn hàng của bạn đã bị hủy tự động sau 10 phút. Vui lòng thử lại sau nhé!',
+          channelId: 'job_alerts',
+          data: {
+            type: 'JOB_CANCELLED',
+            sessionId: sessionId.toString(),
+            click_action: 'FLUTTER_NOTIFICATION_CLICK',
+          },
+        });
       }
       this.logger.log(
         `🚫 Session #${sessionId} automatically CANCELLED after timeout.`,

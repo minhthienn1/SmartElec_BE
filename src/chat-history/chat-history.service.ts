@@ -1,32 +1,38 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
+type ChatSessionType = 'AI_DIAGNOSIS' | 'DIRECT_BOOKING';
+
 @Injectable()
 export class ChatHistoryService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService) { }
 
   /**
-   * Lưu hoặc Cập nhật phiên chẩn đoán vào bảng `chatSession`.
-   * @param userId    - ID của user
-   * @param title     - Tên thiết bị
-   * @param summary   - Tóm tắt mới nhất từ AI
-   * @param sessionId - (Tùy chọn) ID của phiên chat hiện tại nếu đã có
+   * Lưu hoặc cập nhật phiên chẩn đoán vào bảng `chatSession`.
+   *
+   * @param userId      - ID của user
+   * @param title       - Tên thiết bị
+   * @param summary     - Tóm tắt mới nhất từ AI
+   * @param sessionId   - ID phiên chat hiện tại nếu đã có
+   * @param sessionType - Loại phiên chat, ví dụ: AI_DIAGNOSIS hoặc DIRECT_BOOKING
    */
   async saveSession(
     userId: number,
     title: string,
     summary: string,
     sessionId?: number,
+    sessionType: ChatSessionType = 'AI_DIAGNOSIS',
   ) {
     try {
-      // 🟢 Nếu đã có sessionId truyền lên từ Flutter -> Tiến hành UPDATE
+      // Nếu đã có sessionId truyền lên từ Flutter -> UPDATE phiên cũ
       if (sessionId) {
         console.log(`🔄 [Prisma] Đang cập nhật Session cũ ID: ${sessionId}`);
+
         const result = await this.prisma.chatSession.update({
           where: { id: sessionId },
           data: {
             aiSummary: summary,
-            symptom: summary, // Cập nhật triệu chứng mới nhất
+            symptom: summary,
           },
           select: {
             id: true,
@@ -36,19 +42,23 @@ export class ChatHistoryService {
             userId: true,
             symptom: true,
             status: true,
+            sessionType: true,
           },
         });
+
         return result;
       }
 
-      // 🟢 Nếu CHƯA có sessionId -> Tạo phiên mới (CREATE) như cũ
+      // Nếu chưa có sessionId -> CREATE phiên mới
       console.log('➕ [Prisma] Đang tạo một Session mới hoàn toàn');
+
       const result = await this.prisma.chatSession.create({
         data: {
           userId,
           deviceType: title,
           aiSummary: summary,
           symptom: summary,
+          sessionType,
         },
         select: {
           id: true,
@@ -58,11 +68,14 @@ export class ChatHistoryService {
           userId: true,
           symptom: true,
           status: true,
+          sessionType: true,
         },
       });
+
       return result;
     } catch (error) {
       console.error('❌ LỖI DATABASE PRISMA:', error);
+
       throw new InternalServerErrorException(
         'Không thể lưu/cập nhật phiên chẩn đoán.',
       );
@@ -71,7 +84,8 @@ export class ChatHistoryService {
 
   /**
    * Lấy toàn bộ lịch sử chẩn đoán của một user.
-   * Sắp xếp theo `createdAt` giảm dần (mới nhất lên đầu).
+   * Sắp xếp theo `createdAt` giảm dần, mới nhất lên đầu.
+   *
    * @param userId - ID của user cần truy vấn
    */
   async getUserHistory(userId: number) {
@@ -84,11 +98,14 @@ export class ChatHistoryService {
           deviceType: true,
           aiSummary: true,
           createdAt: true,
-          symptom: true, // ➕ Lấy vấn đề để Flutter hiện lên Card
-          status: true, // ➕ Lấy trạng thái để Flutter đổi màu
+          symptom: true,
+          status: true,
+          sessionType: true,
         },
       });
     } catch (error) {
+      console.error('❌ LỖI DATABASE PRISMA:', error);
+
       throw new InternalServerErrorException(
         'Không thể tải lịch sử chẩn đoán. Vui lòng thử lại.',
       );

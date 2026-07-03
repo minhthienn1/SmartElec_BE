@@ -1,4 +1,10 @@
-import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  HttpException,
+  HttpStatus,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { AccessLevel, UserRole } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
@@ -183,12 +189,16 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
       if (parsed.state?.risk === 'RED') {
         parsed.is_booking_triggered = true;
 
-        if (
-          !parsed.text.includes('[Đặt thợ ngay]') &&
-          !parsed.text.includes('[GỌI THỢ]')
-        ) {
+        const hasBookingHint = [
+          '[ĐẶT THỢ]',
+          '[Đặt thợ ngay]',
+          '[GỌI THỢ]',
+          'Đặt thợ ngay',
+        ].some((keyword) => parsed.text?.includes(keyword));
+
+        if (!hasBookingHint) {
           parsed.text +=
-            '\n\nBạn có thể nhấn **[Đặt thợ ngay]** để gửi yêu cầu hỗ trợ chính thức sau khi khu vực đã an toàn.';
+            '\n\n🚨 **TÌNH HUỐNG KHẨN CẤP:** Bạn có thể nhấn **[Đặt thợ ngay]** để gửi yêu cầu hỗ trợ chính thức sau khi khu vực đã an toàn.';
         }
       }
 
@@ -200,12 +210,13 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
         parsed,
       });
     } catch (error: any) {
-      this.logger.error(`AI Error: ${error.message}`);
+      this.logger.error(`AI Error: ${error.message}`, error.stack);
 
       if (error.message?.includes('429')) {
         return {
           text: 'Hiện tại lượt dùng Gemini đang tạm hết, bạn thử lại sau ít phút nhé.',
           state: prevState || null,
+          is_booking_triggered: false,
         };
       }
 
@@ -216,6 +227,7 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
       return {
         text: 'Hệ thống AI đang bận, bạn thử lại sau ít phút nhé.',
         state: prevState || null,
+        is_booking_triggered: false,
       };
     }
   }
@@ -268,11 +280,13 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
     });
 
     const sessionContext = input.sessionId
-      ? await this.prisma.chatSession.findUnique({
+      ? await this.prisma.chatSession.findFirst({
         where: {
           id: input.sessionId,
+          userId: input.userId,
         },
         select: {
+          status: true,
           deviceType: true,
           device: {
             select: {
@@ -284,6 +298,12 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
         },
       })
       : null;
+
+    if (sessionContext && sessionContext.status !== 'AI_CONSULTING') {
+      throw new BadRequestException(
+        'Phiên chẩn đoán AI này đã đóng hoặc đã chuyển sang bước đặt thợ. Không thể chat thêm trong phiên này.',
+      );
+    }
 
     const deviceContext =
       devices.length > 0
@@ -331,6 +351,7 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
       modelCode: string | null;
     }>;
     sessionContext: {
+      status: string;
       deviceType: string | null;
       device: {
         category: string;
@@ -352,8 +373,10 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
         input.prevState?.device ||
         null;
 
-      const brandFilter = primaryDevice?.brandName || null;
-      const modelCodeFilter = primaryDevice?.modelCode || null;
+      const brandFilter =
+        primaryDevice?.brandName || input.prevState?.brand || null;
+      const modelCodeFilter =
+        primaryDevice?.modelCode || input.prevState?.model || null;
 
       let ragRes = await this.ragRetrievalService.findRelevantChunks({
         query: input.originalText,
@@ -400,11 +423,18 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
         2,
       );
 
-    if (examples.golden.length === 0 && !examples.negative) {
+    const goldenExamples = examples?.golden ?? [];
+    const negativeExample = examples?.negative ?? null;
+
+    if (goldenExamples.length === 0 && !negativeExample) {
       return '';
     }
 
-    const goldenText = examples.golden
+    this.logger.log(
+      `RLHF injected ${goldenExamples.length} golden example(s) for category "${category}"`,
+    );
+
+    const goldenText = goldenExamples
       .map(
         (log, index) =>
           `   [Tốt #${index + 1}] Khách: "${log.userMsg}"\n   AI: "${(
@@ -413,9 +443,9 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
       )
       .join('\n\n');
 
-    const negativeText = examples.negative
-      ? `   [Xấu] Khách: "${examples.negative.userMsg}"\n   AI: "${(
-        examples.negative.aiResponse ?? ''
+    const negativeText = negativeExample
+      ? `   [Xấu] Khách: "${negativeExample.userMsg}"\n   AI: "${(
+        negativeExample.aiResponse ?? ''
       ).substring(0, 300)}..."`
       : '';
 

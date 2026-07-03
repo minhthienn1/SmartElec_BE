@@ -22,12 +22,16 @@ class SaveHistoryDto {
   @IsString()
   @IsOptional()
   summary: string;
+
+  @IsString()
+  @IsOptional()
+  sessionType?: string;
 }
 
 @Controller('chats')
 @UseGuards(AuthGuard('jwt')) // Dùng AuthGuard('jwt') thay vì import guard trực tiếp → linh hoạt hơn
 export class ChatHistoryController {
-  constructor(private readonly chatHistoryService: ChatHistoryService) {}
+  constructor(private readonly chatHistoryService: ChatHistoryService) { }
 
   /**
    * POST /chats/save
@@ -52,11 +56,7 @@ export class ChatHistoryController {
     }
 
     const userId = req.user.userId;
-    return this.chatHistoryService.saveSession(
-      userId,
-      body.title,
-      body.summary,
-    );
+    return this.chatHistoryService.saveSession(userId, body.title, body.summary, undefined, body.sessionType as any);
   }
 
   /**
