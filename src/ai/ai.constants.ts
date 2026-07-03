@@ -7,7 +7,12 @@ export const SAFE_FALLBACK_STATE = {
     phase: 'COLLECTING',
     risk: 'UNKNOWN',
     device: null,
+    deviceCategory: null,
     symptom: null,
+    contextQuestionsAsked: false,
+    contextQuestionSet: null,
+    contextAnswers: {},
+    askedFollowupKey: null,
     flags: [],
 };
 
@@ -55,8 +60,10 @@ Với laptop, điện thoại, máy in, PC:
 QUY TẮC TƯ VẤN TỪNG BƯỚC
 ══════════════════════════════════════════
 - Không đưa toàn bộ nguyên nhân và toàn bộ hướng xử lý trong một lần nếu thông tin người dùng còn thiếu.
-- Nếu câu hỏi kỹ thuật có nhiều khả năng nguyên nhân, hãy chuyển sang chẩn đoán từng bước.
-- Mỗi lượt chỉ hỏi tối đa 1 câu hỏi chính.
+- Backend sẽ quyết định khi nào hỏi bộ 3 câu context, khi nào hỏi 1 follow-up, và khi nào đủ điều kiện để vào RAG/tư vấn.
+- Không tự ý lặp lại nguyên bộ câu hỏi nếu state đã có contextQuestionSet phù hợp và contextQuestionsAsked = true.
+- Nếu state đã ở ASKING_CONTEXT mà người dùng đã trả lời được ít nhất một tín hiệu chẩn đoán hữu ích, hãy ưu tiên tư vấn dựa trên context + [KIẾN THỨC TỪ HỆ THỐNG] thay vì hỏi vòng vo.
+- Mỗi lượt chỉ hỏi tối đa 3 câu khi backend đang thu context ban đầu, hoặc tối đa 1 câu follow-up khi backend đã đánh dấu ASKING_CONTEXT.
 - Mỗi lượt chỉ hướng dẫn tối đa 1-2 thao tác an toàn.
 - Không yêu cầu người dùng tháo máy, mở board, đo điện nếu họ không phải kỹ thuật viên.
 - Luôn ghi nhận thông tin người dùng đã cung cấp trước khi hỏi bước tiếp theo.
@@ -115,13 +122,26 @@ export const responseSchema: any = {
                     type: SchemaType.STRING,
                     description: 'Mô tả triệu chứng',
                 },
+                deviceCategory: {
+                    type: SchemaType.STRING,
+                    enum: [
+                        'COOLING_HEATING',
+                        'WATER_APPLIANCE',
+                        'COOKING_APPLIANCE',
+                        'DISPLAY_AUDIO',
+                        'CLEANING_APPLIANCE',
+                        'AIR_WATER_TREATMENT',
+                        'GENERIC_APPLIANCE',
+                    ],
+                    description: 'Nhóm thiết bị để backend chọn bộ context phù hợp',
+                },
                 ctx: {
                     type: SchemaType.STRING,
                     description: 'Context phụ thêm',
                 },
                 phase: {
                     type: SchemaType.STRING,
-                    enum: ['COLLECTING', 'DIAGNOSING', 'READY_TO_BOOK'],
+                    enum: ['COLLECTING', 'ASKING_CONTEXT', 'READY_FOR_RAG', 'ADVISING', 'READY_TO_BOOK'],
                     description: 'Giai đoạn hội thoại hiện tại',
                 },
                 risk: {
@@ -134,33 +154,29 @@ export const responseSchema: any = {
                     items: { type: SchemaType.STRING },
                     description: 'Các tag nguy hiểm phát hiện được',
                 },
-                diagnosisFlow: {
+                contextQuestionsAsked: {
+                    type: SchemaType.BOOLEAN,
+                    description: 'Đã hỏi bộ context hiện tại hay chưa',
+                },
+                contextQuestionSet: {
+                    type: SchemaType.STRING,
+                    description: 'Khóa bộ câu hỏi context khớp với deviceCategory + symptom',
+                },
+                askedFollowupKey: {
+                    type: SchemaType.STRING,
+                    description: 'Follow-up quan trọng nhất đã hỏi sau bộ context',
+                },
+                contextAnswers: {
                     type: SchemaType.OBJECT,
                     properties: {
-                        mode: {
-                            type: SchemaType.STRING,
-                            enum: ['FREE_CHAT', 'GUIDED_DIAGNOSIS', 'BOOKING_COLLECTION'],
-                        },
-                        currentStep: { type: SchemaType.NUMBER },
-                        currentQuestion: { type: SchemaType.STRING },
-                        askedQuestions: {
-                            type: SchemaType.ARRAY,
-                            items: { type: SchemaType.STRING },
-                        },
-                        missingFields: {
-                            type: SchemaType.ARRAY,
-                            items: { type: SchemaType.STRING },
-                        },
-                        nextAction: {
-                            type: SchemaType.STRING,
-                            enum: [
-                                'ASK_ONE_QUESTION',
-                                'ANSWER_WITH_RAG',
-                                'SUGGEST_BOOKING',
-                                'EMERGENCY_WARNING',
-                                'END',
-                            ],
-                        },
+                        operationStatus: { type: SchemaType.STRING },
+                        errorCode: { type: SchemaType.STRING },
+                        abnormalSigns: { type: SchemaType.STRING },
+                        brandModel: { type: SchemaType.STRING },
+                        whenHappens: { type: SchemaType.STRING },
+                        maintenanceHistory: { type: SchemaType.STRING },
+                        environmentCondition: { type: SchemaType.STRING },
+                        safetySigns: { type: SchemaType.STRING },
                     },
                 },
             },

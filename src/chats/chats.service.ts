@@ -617,12 +617,64 @@ export class ChatsService {
           },
         },
       });
-      return messages.reverse();
+      if (messages.length > 0) {
+        return messages.reverse();
+      }
+
+      if (cursor) {
+        return [];
+      }
+
+      return this.buildMessagesFromAiLogs(sessionId, limit);
     } catch (error: any) {
       throw new InternalServerErrorException(
         'Lỗi khi tải tin nhắn: ' + error.message,
       );
     }
+  }
+
+  private async buildMessagesFromAiLogs(sessionId: number, limit: number) {
+    const logs = await this.prisma.aiReasoningLog.findMany({
+      where: { sessionId },
+      orderBy: { createdAt: 'asc' },
+      take: limit,
+    });
+
+    return logs.flatMap((log) => {
+      const items: Array<Record<string, unknown>> = [];
+
+      if (log.userMsg?.trim()) {
+        items.push({
+          id: -(log.id * 2),
+          sessionId,
+          senderId: log.userId,
+          sender: null,
+          type: MessageType.TEXT,
+          content: log.userMsg,
+          metadata: null,
+          isRead: true,
+          isDeleted: false,
+          createdAt: log.createdAt,
+        });
+      }
+
+      if (log.aiResponse?.trim()) {
+        items.push({
+          id: -(log.id * 2 + 1),
+          sessionId,
+          senderId: null,
+          sender: null,
+          type: MessageType.TEXT,
+          content: log.aiResponse,
+          metadata: null,
+          isRead: true,
+          isDeleted: false,
+          createdAt: log.createdAt,
+        });
+      }
+
+      return items;
+    });
   }
 
   async sendMessage(

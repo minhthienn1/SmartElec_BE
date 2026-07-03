@@ -25,7 +25,7 @@ export class AiService {
     private readonly aiConversationPersistenceService: AiConversationPersistenceService,
     private readonly aiRateLimitService: AiRateLimitService,
     private readonly aiGeminiService: AiGeminiService,
-  ) { }
+  ) {}
 
   async chatWithAI(
     userId: number,
@@ -33,27 +33,54 @@ export class AiService {
     sessionIdParam: number | null,
     imageBase64?: string,
     history: any[] = [],
+    clientState: Record<string, any> | null = null,
   ) {
     const originalText = this.validateMessage(message);
 
     this.aiRateLimitService.assertRateLimit(userId);
 
     const sessionId: number | null = sessionIdParam;
-
-    const prevState =
+    const persistedState =
       await this.aiConversationPersistenceService.getPreviousState(
         userId,
         sessionId,
       );
+    const prevState = this.mergePreviousState(persistedState, clientState);
 
     try {
       const intentGate = this.aiIntentGateService.analyze(originalText);
+      let effectiveState = prevState;
+      let ragQuery = originalText;
+      let safetyWarning: string | null = null;
+
+      if (intentGate.isTechnical) {
+        const guidedDiagnosis =
+          this.aiGuidedDiagnosisService.resolveNextStep({
+            originalText,
+            prevState,
+            intentGate,
+          });
+
+        if (guidedDiagnosis.action === 'DIRECT_RESPONSE') {
+          return this.aiConversationPersistenceService.finalizeDirectResponse({
+            userId,
+            sessionId,
+            message: originalText,
+            prevState,
+            parsed: guidedDiagnosis.parsedResponse,
+          });
+        }
+
+        effectiveState = guidedDiagnosis.nextState;
+        ragQuery = guidedDiagnosis.ragQuery;
+        safetyWarning = guidedDiagnosis.safetyWarning || null;
+      }
 
       if (intentGate.shouldReturnDirectResponse && intentGate.directResponse) {
         const parsed =
           this.aiResponseBuilderService.buildDirectParsedResponse(
             intentGate,
-            prevState,
+            effectiveState,
           );
 
         return this.aiConversationPersistenceService.finalizeDirectResponse({
@@ -68,7 +95,7 @@ export class AiService {
       const context = await this.buildConversationContext({
         userId,
         sessionId,
-        prevState,
+        prevState: effectiveState,
       });
 
       let ragContext = `
@@ -77,11 +104,13 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
 `;
 
       let retrievedChunks: any[] = [];
+      const shouldUseRag =
+        intentGate.shouldUseRag || effectiveState?.phase === 'READY_FOR_RAG';
 
-      if (intentGate.shouldUseRag) {
+      if (shouldUseRag) {
         retrievedChunks = await this.retrieveRagChunks({
-          originalText,
-          prevState,
+          query: ragQuery,
+          prevState: effectiveState,
           accessLevel: context.accessLevel,
           devices: context.devices,
           sessionContext: context.sessionContext,
@@ -90,9 +119,13 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
         if (retrievedChunks.length === 0) {
           const parsed = this.aiResponseBuilderService.buildNoRagFallback(
             intentGate,
-            prevState,
-            originalText,
+            effectiveState,
+            ragQuery,
           );
+
+          if (safetyWarning) {
+            parsed.text = `${safetyWarning}\n\n${parsed.text}`;
+          }
 
           return this.aiConversationPersistenceService.finalizeDirectResponse({
             userId,
@@ -107,29 +140,9 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
           this.aiResponseBuilderService.buildRagContext(retrievedChunks);
       }
 
-      const guidedDiagnosis =
-        this.aiGuidedDiagnosisService.resolveNextStep({
-          originalText,
-          prevState,
-          intentGate,
-          ragChunks: retrievedChunks,
-        });
-
-      if (
-        guidedDiagnosis.shouldAskStepByStep &&
-        guidedDiagnosis.parsedResponse
-      ) {
-        return this.aiConversationPersistenceService.finalizeDirectResponse({
-          userId,
-          sessionId,
-          message: originalText,
-          prevState,
-          parsed: guidedDiagnosis.parsedResponse,
-        });
-      }
-
       const currentCategory =
-        prevState?.device ||
+        effectiveState?.deviceCategory ||
+        effectiveState?.device ||
         context.sessionContext?.device?.category ||
         context.sessionContext?.deviceType ||
         (context.devices.length > 0 ? context.devices[0].category : '');
@@ -140,7 +153,6 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
 
       const cleanMessage =
         this.aiResponseBuilderService.sanitizeUserMessage(originalText);
-
       const userPrompt = this.aiResponseBuilderService.buildUserPrompt({
         ragContext,
         rlhfInstruction,
@@ -149,10 +161,8 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
         intentGate,
         cleanMessage,
       });
-
       const cleanHistory =
         this.aiResponseBuilderService.buildCleanGeminiHistory(history);
-
       const rawText = await this.aiGeminiService.generateRawResponse({
         userPrompt,
         history: cleanHistory,
@@ -170,15 +180,23 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
 
         parsed = {
           text: 'Mình chưa hiểu rõ vấn đề. Bạn mô tả thêm thiết bị và tình trạng lỗi giúp mình nhé.',
-          state: prevState || null,
+          state: effectiveState || null,
           is_booking_triggered: false,
         };
       }
 
       parsed = this.aiResponseBuilderService.normalizeParsedResponse(
         parsed,
-        prevState,
+        effectiveState,
       );
+
+      if (parsed.state?.phase === 'READY_FOR_RAG') {
+        parsed.state.phase = 'ADVISING';
+      }
+
+      if (safetyWarning && !parsed.text.includes(safetyWarning)) {
+        parsed.text = `${safetyWarning}\n\n${parsed.text}`;
+      }
 
       if (parsed.state?.risk === 'RED') {
         parsed.is_booking_triggered = true;
@@ -251,6 +269,55 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
     return originalText;
   }
 
+  private mergePreviousState(
+    persistedState: Record<string, any> | null,
+    clientState: Record<string, any> | null,
+  ) {
+    if (!persistedState && !clientState) {
+      return null;
+    }
+
+    const mergedState = {
+      ...(persistedState || {}),
+      ...(clientState || {}),
+    };
+
+    const mergedContextAnswers = this.mergeContextAnswers(
+      persistedState?.contextAnswers,
+      clientState?.contextAnswers,
+    );
+
+    if (Object.keys(mergedContextAnswers).length > 0) {
+      mergedState.contextAnswers = mergedContextAnswers;
+    }
+
+    return mergedState;
+  }
+
+  private mergeContextAnswers(
+    previousValue: unknown,
+    nextValue: unknown,
+  ): Record<string, unknown> {
+    const previous =
+      previousValue && typeof previousValue === 'object' && !Array.isArray(previousValue)
+        ? (previousValue as Record<string, unknown>)
+        : {};
+    const next =
+      nextValue && typeof nextValue === 'object' && !Array.isArray(nextValue)
+        ? (nextValue as Record<string, unknown>)
+        : {};
+
+    const merged: Record<string, unknown> = { ...previous };
+
+    for (const [key, value] of Object.entries(next)) {
+      if (typeof value === 'string' && value.trim()) {
+        merged[key] = value.trim();
+      }
+    }
+
+    return merged;
+  }
+
   private async buildConversationContext(input: {
     userId: number;
     sessionId: number | null;
@@ -269,29 +336,29 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
 
     const sessionContext = input.sessionId
       ? await this.prisma.chatSession.findUnique({
-        where: {
-          id: input.sessionId,
-        },
-        select: {
-          deviceType: true,
-          device: {
-            select: {
-              category: true,
-              brandName: true,
-              modelCode: true,
+          where: {
+            id: input.sessionId,
+          },
+          select: {
+            deviceType: true,
+            device: {
+              select: {
+                category: true,
+                brandName: true,
+                modelCode: true,
+              },
             },
           },
-        },
-      })
+        })
       : null;
 
     const deviceContext =
       devices.length > 0
         ? `\n[THÔNG TIN THIẾT BỊ KHÁCH HÀNG]: Khách hàng có: ${devices
-          .map((device) =>
-            [device.brandName, device.category].filter(Boolean).join(' '),
-          )
-          .join(', ')}`
+            .map((device) =>
+              [device.brandName, device.category].filter(Boolean).join(' '),
+            )
+            .join(', ')}`
         : '\n[THÔNG TIN THIẾT BỊ KHÁCH HÀNG]: Chưa có thiết bị nào được lưu trong hồ sơ.';
 
     const user = await this.prisma.user.findUnique({
@@ -322,7 +389,7 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
   }
 
   private async retrieveRagChunks(input: {
-    originalText: string;
+    query: string;
     prevState: Record<string, any> | null;
     accessLevel: AccessLevel;
     devices: Array<{
@@ -342,13 +409,12 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
     try {
       const fallbackDevice =
         input.devices.length === 1 ? input.devices[0] : null;
-
       const primaryDevice = input.sessionContext?.device || fallbackDevice;
 
       const categoryFilter =
+        input.prevState?.deviceCategory ||
         input.sessionContext?.deviceType ||
         primaryDevice?.category ||
-        input.prevState?.deviceCategory ||
         input.prevState?.device ||
         null;
 
@@ -356,7 +422,7 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
       const modelCodeFilter = primaryDevice?.modelCode || null;
 
       let ragRes = await this.ragRetrievalService.findRelevantChunks({
-        query: input.originalText,
+        query: input.query,
         accessLevel: input.accessLevel,
         limit: RAG_LIMITS.DEFAULT_RETRIEVAL_LIMIT,
         minScore: RAG_LIMITS.MIN_RETRIEVAL_SCORE,
@@ -372,7 +438,7 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
         (categoryFilter || brandFilter || modelCodeFilter)
       ) {
         ragRes = await this.ragRetrievalService.findRelevantChunks({
-          query: input.originalText,
+          query: input.query,
           accessLevel: input.accessLevel,
           limit: RAG_LIMITS.DEFAULT_RETRIEVAL_LIMIT,
           minScore: RAG_LIMITS.MIN_RETRIEVAL_SCORE,
@@ -382,7 +448,7 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
       }
 
       this.aiResponseBuilderService.prioritizeChunksByErrorCode(
-        input.originalText,
+        input.query,
         results,
       );
 
@@ -415,12 +481,12 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
 
     const negativeText = examples.negative
       ? `   [Xấu] Khách: "${examples.negative.userMsg}"\n   AI: "${(
-        examples.negative.aiResponse ?? ''
-      ).substring(0, 300)}..."`
+          examples.negative.aiResponse ?? ''
+        ).substring(0, 300)}..."`
       : '';
 
     return `
-[VÍ DỤ TRẢ LỜI XUẤT SẮC ĐÃ CHỐT ĐƠN]:
+[VÍ DỤ TRẢ LỜI XUẤT SẮC ĐỂ CHỐT ĐƠN]:
 ${goldenText || '   (Chưa có)'}
 
 [VÍ DỤ CẦN TRÁNH GÂY KHÓ CHỊU CHO KHÁCH]:
