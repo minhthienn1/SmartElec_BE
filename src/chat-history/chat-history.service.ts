@@ -74,7 +74,10 @@ export class ChatHistoryService {
   async getUserHistory(userId: number) {
     try {
       return await this.prisma.chatSession.findMany({
-        where: { userId },
+        where: { 
+          userId,
+          sessionType: 'AI_DIAGNOSIS', // Lọc chỉ lấy các phiên chat với AI (loại trừ DIRECT_BOOKING)
+        },
         orderBy: { createdAt: 'desc' },
         select: {
           id: true,

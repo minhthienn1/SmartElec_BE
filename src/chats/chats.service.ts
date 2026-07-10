@@ -41,7 +41,7 @@ export class ChatsService {
             { technicianId: { not: null } },
             {
               OR: [
-                { status: { notIn: ['COMPLETED', 'CANCELLED'] } }, // Đang làm (không phải COMPLETED hay CANCELLED) thì hiện cho cả 2
+                { status: { notIn: ['COMPLETED', 'DONE', 'CANCELLED'] } }, // Đang làm (không phải COMPLETED, DONE hay CANCELLED) thì hiện cho cả 2
                 {
                   AND: [
                     { userId: userId }, // Chỉ Khách hàng mới thấy đơn COMPLETED
@@ -56,7 +56,7 @@ export class ChatsService {
         orderBy: { updatedAt: 'desc' },
         include: {
           user: { select: { id: true, fullName: true, avatarUrl: true, role: true } },
-          technician: { select: { id: true, fullName: true, avatarUrl: true, role: true, phoneNumber:true } },
+          technician: { select: { id: true, fullName: true, avatarUrl: true, role: true, phoneNumber: true, averageRating: true, totalReviews: true } },
           review: true, // Thêm include review để check
           messages: {
             orderBy: { createdAt: 'desc' },
@@ -75,7 +75,7 @@ export class ChatsService {
       where: { id: sessionId },
       include: {
         user: { select: { id: true, fullName: true, avatarUrl: true, role: true } },
-        technician: { select: { id: true, fullName: true, avatarUrl: true, role: true, phoneNumber: true } },
+        technician: { select: { id: true, fullName: true, avatarUrl: true, role: true, phoneNumber: true, averageRating: true, totalReviews: true } },
         review: true,
       },
     });
@@ -118,7 +118,7 @@ export class ChatsService {
           throw new BadRequestException('Đang phát sóng tìm thợ, vui lòng đợi thợ nhận đơn để tiếp tục nhắn tin.');
         }
 
-        if (session.status === 'COMPLETED' || session.status === 'CANCELLED') {
+        if (session.status === 'COMPLETED' || session.status === 'CANCELLED' || session.status === 'DONE') {
           throw new BadRequestException('Đơn hàng đã đóng, không thể gửi thêm tin nhắn.');
         }
 
@@ -706,6 +706,12 @@ export class ChatsService {
         },
       });
 
+      // Bước 4: Đánh dấu đơn hàng là DONE (Đã hoàn tất trọn vẹn)
+      await tx.chatSession.update({
+        where: { id: sessionId },
+        data: { status: 'DONE' },
+      });
+
       this.logger.log(
         `⭐ [Review] Đơn #${sessionId} → Thợ #${technicianId} nhận đánh giá ${dto.rating}/5. Trung bình mới: ${newAvg.toFixed(1)} (${newCount} lượt)`,
       );
@@ -1098,14 +1104,34 @@ export class ChatsService {
   }
 
   // ─────────────────────────────────────────────────────────────────
+  // ĐƠN ĐANG HOẠT ĐỘNG CỦA KHÁCH HÀNG
+  // ─────────────────────────────────────────────────────────────────
+  async getActiveRunningSessions(userId: number) {
+    const sessions = await this.prisma.chatSession.findMany({
+      where: {
+        userId: userId,
+        status: {
+          in: ['BROADCASTING', 'MATCHED', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS']
+        }
+      },
+      orderBy: { updatedAt: 'desc' },
+      include: {
+        device: { select: { category: true } },
+        technician: { select: { id: true, fullName: true, avatarUrl: true, role: true, phoneNumber: true, averageRating: true, totalReviews: true } }
+      }
+    });
+    return sessions;
+  }
+
+  // ─────────────────────────────────────────────────────────────────
   // LỊCH SỬ SỬA CHỮA CỦA KHÁCH HÀNG
   // ─────────────────────────────────────────────────────────────────
   async getUserRepairHistory(userId: number) {
     const sessions = await this.prisma.chatSession.findMany({
       where: {
         userId: userId, 
-        technicianId: { not: null },
         status: { in: ['COMPLETED', 'DONE'] }, 
+        isHiddenByCustomer: false, // Ẩn những ca mà khách đã xóa/ẩn
       },
       orderBy: { updatedAt: 'desc' },
       include: {
