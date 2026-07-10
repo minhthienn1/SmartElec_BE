@@ -1778,11 +1778,9 @@ export class ChatsService {
     }
 
     if (
-      ![
-        JobStatus.MATCHED,
-        JobStatus.EN_ROUTE,
-        JobStatus.IN_PROGRESS,
-      ].includes(session.status)
+      session.status !== JobStatus.MATCHED &&
+      session.status !== JobStatus.EN_ROUTE &&
+      session.status !== JobStatus.IN_PROGRESS
     ) {
       throw new BadRequestException(
         'Chỉ có thể hủy đơn đang trong quá trình thực hiện.',

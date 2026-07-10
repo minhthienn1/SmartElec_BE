@@ -643,6 +643,20 @@ export class AiIntentGateService {
   }
 
   private inferIssueLabel(expandedText: string): string | null {
+    const emergencyIssueMap: Array<[string[], string]> = [
+      [['mui khet', 'chay khet', 'bi chay', 'dang chay'], 'Có mùi khét / cháy'],
+      [['boc khoi', 'co khoi'], 'Bốc khói'],
+      [['tia lua', 'chap dien', 'ro dien', 'giat dien', 'net lua', 'xet lua'], 'Có tia lửa / chập điện'],
+      [['nong bat thuong', 'qua nong', 'o dien nong'], 'Nóng bất thường'],
+      [['ro gas', 'ro nuoc'], 'Rò rỉ nguy hiểm'],
+    ];
+
+    for (const [keywords, label] of emergencyIssueMap) {
+      if (this.includesAnyPhrase(expandedText, keywords)) {
+        return label;
+      }
+    }
+
     const issueMap: Array<[string[], string]> = [
       [['khong mat', 'khong lanh'], 'Không mát/không lạnh'],
       [['khong chay', 'khong hoat dong'], 'Không chạy'],

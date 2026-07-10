@@ -7,6 +7,20 @@ import {
 
 @Injectable()
 export class AiResponseBuilderService {
+    private buildEmergencySymptom(intentGate: {
+        originalText?: string | null;
+        detectedIssueLabel?: string | null;
+    }) {
+        const originalText = intentGate.originalText?.trim();
+        const issueLabel = intentGate.detectedIssueLabel?.trim();
+
+        if (originalText && originalText.length >= 8) {
+            return originalText;
+        }
+
+        return issueLabel || 'Có dấu hiệu nguy hiểm cần kiểm tra trực tiếp';
+    }
+
     sanitizeUserMessage(message: string): string {
         const forbiddenKeywords = [
             /\[\s*THÔNG TIN THIẾT BỊ KHÁCH HÀNG\s*\]/gi,
@@ -47,7 +61,7 @@ export class AiResponseBuilderService {
                     phase: 'READY_TO_BOOK',
                     risk: 'RED',
                     flags: ['EMERGENCY'],
-                    symptom: intentGate.detectedIssueLabel || intentGate.originalText,
+                    symptom: this.buildEmergencySymptom(intentGate),
                 },
                 is_booking_triggered: true,
             };
