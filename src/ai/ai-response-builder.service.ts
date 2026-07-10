@@ -46,6 +46,11 @@ export class AiResponseBuilderService {
                 intentGate.detectedDeviceLabel ||
                 prevState?.device ||
                 SAFE_FALLBACK_STATE.device,
+            deviceCategory:
+                intentGate.supportedDeviceCategory &&
+                    intentGate.supportedDeviceCategory !== 'UNKNOWN'
+                    ? intentGate.supportedDeviceCategory
+                    : prevState?.deviceCategory || SAFE_FALLBACK_STATE.deviceCategory,
             symptom:
                 intentGate.detectedIssueLabel ||
                 intentGate.detectedErrorCode ||
@@ -123,7 +128,7 @@ export class AiResponseBuilderService {
                     intentGate.detectedIssueLabel ||
                     intentGate.detectedErrorCode ||
                     originalText,
-                phase: 'COLLECTING',
+                phase: prevState?.phase || 'COLLECTING',
                 risk: prevState?.risk || 'UNKNOWN',
             },
             is_booking_triggered: false,
@@ -221,6 +226,10 @@ Chỉ thị quan trọng:
 
     normalizeParsedResponse(parsed: any, prevState: any) {
         const fallbackState = prevState || SAFE_FALLBACK_STATE;
+        const mergedContextAnswers = this.mergeContextAnswers(
+            fallbackState?.contextAnswers,
+            parsed?.state?.contextAnswers,
+        );
 
         return {
             text:
@@ -230,6 +239,7 @@ Chỉ thị quan trọng:
             state: {
                 ...fallbackState,
                 ...(parsed?.state || {}),
+                contextAnswers: mergedContextAnswers,
                 phase: parsed?.state?.phase || fallbackState.phase || 'COLLECTING',
                 risk: parsed?.state?.risk || fallbackState.risk || 'UNKNOWN',
                 flags: Array.isArray(parsed?.state?.flags)
@@ -277,5 +287,25 @@ ${input.cleanMessage}
 
 Hãy phân tích và phản hồi dựa trên vai trò SmartElec Buddy.
 `;
+    }
+    private mergeContextAnswers(previousValue: unknown, nextValue: unknown) {
+        const previous =
+            previousValue && typeof previousValue === 'object' && !Array.isArray(previousValue)
+                ? (previousValue as Record<string, unknown>)
+                : {};
+        const next =
+            nextValue && typeof nextValue === 'object' && !Array.isArray(nextValue)
+                ? (nextValue as Record<string, unknown>)
+                : {};
+
+        const merged: Record<string, unknown> = { ...previous };
+
+        for (const [key, value] of Object.entries(next)) {
+            if (typeof value === 'string' && value.trim()) {
+                merged[key] = value.trim();
+            }
+        }
+
+        return merged;
     }
 }

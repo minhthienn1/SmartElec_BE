@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { JobStatus } from '@prisma/client';
+import { JobStatus, MessageType } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -69,6 +69,13 @@ export class AiConversationPersistenceService {
             input.prevState,
             input.parsed,
         );
+
+        await this.persistTranscriptMessages({
+            sessionId,
+            userId: input.userId,
+            userMessage: input.message,
+            aiResponse: input.parsed?.text,
+        });
 
         return {
             ...input.parsed,
@@ -317,6 +324,62 @@ export class AiConversationPersistenceService {
         } catch (error) {
             this.logger.error('Lỗi khi lưu/cập nhật ChatSession:', error);
             return null;
+        }
+    }
+
+    private async persistTranscriptMessages(input: {
+        sessionId: number | null;
+        userId: number;
+        userMessage: string;
+        aiResponse?: string | null;
+    }) {
+        if (!input.sessionId) {
+            return;
+        }
+
+        const userMessage = input.userMessage?.trim();
+        const aiResponse = input.aiResponse?.trim();
+
+        if (!userMessage && !aiResponse) {
+            return;
+        }
+
+        try {
+            const data: Array<{
+                sessionId: number;
+                senderId?: number | null;
+                type: MessageType;
+                content: string;
+            }> = [];
+
+            if (userMessage) {
+                data.push({
+                    sessionId: input.sessionId,
+                    senderId: input.userId,
+                    type: MessageType.TEXT,
+                    content: userMessage,
+                });
+            }
+
+            if (aiResponse) {
+                data.push({
+                    sessionId: input.sessionId,
+                    senderId: null,
+                    type: MessageType.TEXT,
+                    content: aiResponse,
+                });
+            }
+
+            if (data.length > 0) {
+                await this.prisma.message.createMany({
+                    data,
+                });
+            }
+        } catch (error) {
+            this.logger.error(
+                `Lỗi khi persist transcript cho session #${input.sessionId}`,
+                error,
+            );
         }
     }
 

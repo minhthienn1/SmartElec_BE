@@ -31,6 +31,7 @@ export class AiController {
       sessionId?: string | number;
       image?: string;
       history?: any[];
+      state?: Record<string, any> | null;
     },
   ) {
     const userId = Number(req.user?.id || req.user?.userId || req.user?.sub);
@@ -51,6 +52,7 @@ export class AiController {
       sessionIdParam,
       body.image,
       body.history || [],
+      body.state || null,
     );
   }
 
