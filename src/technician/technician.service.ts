@@ -14,7 +14,7 @@ export class TechnicianService {
       const jobs = await this.prisma.chatSession.findMany({
         where: {
           technicianId: technicianId, 
-          status: 'COMPLETED',
+          status: { in: ['COMPLETED', 'DONE'] },
         },
         include: {
           // Lấy thông tin user
@@ -61,7 +61,7 @@ export class TechnicianService {
       const completedJobsCount = await this.prisma.chatSession.count({
         where: {
           technicianId: technicianId,
-          status: 'COMPLETED',
+          status: { in: ['COMPLETED', 'DONE'] },
         },
       });
 
