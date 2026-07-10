@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { JobStatus, MessageType } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
+import { evaluateAiUsefulness } from './ai-usefulness-scoring';
 
 export type AiConversationState = Record<string, any>;
 
@@ -100,6 +101,12 @@ export class AiConversationPersistenceService {
         }
 
         const scoreIncrement = feedback === 'LIKE' ? 2 : -5;
+        const usefulnessEvaluation = evaluateAiUsefulness({
+            prevState: this.toPlainState(log.prevState),
+            nextState: this.toPlainState(log.nextState),
+            aiResponse: log.aiResponse,
+            aiFeedback: feedback,
+        });
 
         await this.prisma.aiReasoningLog.update({
             where: {
@@ -110,6 +117,9 @@ export class AiConversationPersistenceService {
                 score: {
                     increment: scoreIncrement,
                 },
+                autoUsefulnessScore: usefulnessEvaluation.autoUsefulnessScore,
+                autoUsefulnessLabel: usefulnessEvaluation.autoUsefulnessLabel,
+                autoUsefulnessReasons: usefulnessEvaluation.autoUsefulnessReasons,
             },
         });
 
@@ -200,6 +210,12 @@ export class AiConversationPersistenceService {
             const score = isBooking ? 10 : 0;
             const deviceCategory = this.getStringValue(state?.device);
             const riskLevel = this.getStringValue(state?.risk) || 'UNKNOWN';
+            const usefulnessEvaluation = evaluateAiUsefulness({
+                prevState,
+                nextState: state,
+                aiResponse: parsed?.text,
+                aiFeedback: null,
+            });
 
             const log = await this.prisma.aiReasoningLog.create({
                 data: {
@@ -211,6 +227,9 @@ export class AiConversationPersistenceService {
                     riskLevel,
                     aiResponse: parsed?.text || '',
                     score,
+                    autoUsefulnessScore: usefulnessEvaluation.autoUsefulnessScore,
+                    autoUsefulnessLabel: usefulnessEvaluation.autoUsefulnessLabel,
+                    autoUsefulnessReasons: usefulnessEvaluation.autoUsefulnessReasons,
                     deviceCategory,
                     isGolden: isBooking,
                 },

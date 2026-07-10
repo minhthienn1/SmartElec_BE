@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, UsefulnessLabel } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { UpdateAiUsefulnessReviewDto } from './dto/update-ai-usefulness-review.dto';
 
 type AdminAiReasoningQuery = {
   search?: string;
@@ -22,9 +23,21 @@ type ReasoningLogRecord = {
   aiResponse: string | null;
   aiFeedback: string | null;
   score: number;
+  autoUsefulnessScore: number | null;
+  autoUsefulnessLabel: UsefulnessLabel | null;
+  autoUsefulnessReasons: unknown;
+  humanUsefulnessLabel: UsefulnessLabel | null;
+  humanUsefulnessNote: string | null;
+  reviewedById: number | null;
+  reviewedAt: Date | null;
   deviceCategory: string | null;
   isGolden: boolean;
   createdAt: Date;
+  reviewedBy?: {
+    id: number;
+    fullName: string | null;
+    phoneNumber: string;
+  } | null;
   retrievedChunks?: Array<{
     chunkId: number;
     score: number | null;
@@ -173,6 +186,14 @@ export class AdminAiReasoningLogsService {
     return null;
   }
 
+  private normalizeStringArray(value: unknown) {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value.filter((item): item is string => typeof item === 'string');
+  }
+
   /** Chuẩn hóa một bản ghi log AI từ database sang shape FE admin cần hiển thị. */
   private mapLog(
     log: ReasoningLogRecord,
@@ -209,6 +230,16 @@ export class AdminAiReasoningLogsService {
           ? log.aiFeedback
           : null,
       score: log.score,
+      autoUsefulnessScore: log.autoUsefulnessScore,
+      autoUsefulnessLabel: log.autoUsefulnessLabel,
+      autoUsefulnessReasons: this.normalizeStringArray(log.autoUsefulnessReasons),
+      humanUsefulnessLabel: log.humanUsefulnessLabel,
+      humanUsefulnessNote: log.humanUsefulnessNote,
+      reviewedById: log.reviewedById,
+      reviewedByName:
+        log.reviewedBy?.fullName?.trim() ||
+        (log.reviewedById ? `Quản trị viên #${log.reviewedById}` : null),
+      reviewedAt: log.reviewedAt?.toISOString() ?? null,
       deviceCategory: log.deviceCategory,
       isGolden: log.isGolden,
       retrievedChunkCount: log._count?.retrievedChunks ?? 0,
@@ -244,9 +275,23 @@ export class AdminAiReasoningLogsService {
         aiResponse: true,
         aiFeedback: true,
         score: true,
+        autoUsefulnessScore: true,
+        autoUsefulnessLabel: true,
+        autoUsefulnessReasons: true,
+        humanUsefulnessLabel: true,
+        humanUsefulnessNote: true,
+        reviewedById: true,
+        reviewedAt: true,
         deviceCategory: true,
         isGolden: true,
         createdAt: true,
+        reviewedBy: {
+          select: {
+            id: true,
+            fullName: true,
+            phoneNumber: true,
+          },
+        },
         retrievedChunks: {
           orderBy: { rank: 'asc' },
           take: 2,
@@ -351,5 +396,33 @@ export class AdminAiReasoningLogsService {
         accessLevel: item.chunk.accessLevel,
       })),
     };
+  }
+
+  async updateUsefulnessReview(
+    logId: number,
+    reviewerId: number,
+    payload: UpdateAiUsefulnessReviewDto,
+  ) {
+    const log = await this.prisma.aiReasoningLog.findUnique({
+      where: { id: logId },
+      select: { id: true },
+    });
+
+    if (!log) {
+      throw new NotFoundException(`Khong tim thay AI reasoning log voi ID = ${logId}`);
+    }
+
+    await this.prisma.aiReasoningLog.update({
+      where: { id: logId },
+      data: {
+        humanUsefulnessLabel: payload.humanUsefulnessLabel,
+        humanUsefulnessNote: payload.humanUsefulnessNote?.trim() || null,
+        reviewedById: reviewerId,
+        reviewedAt: new Date(),
+      },
+    });
+
+    const logs = await this.getLogs({});
+    return logs.find((item) => item.id === logId) ?? null;
   }
 }
