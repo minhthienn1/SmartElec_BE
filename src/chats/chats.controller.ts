@@ -488,6 +488,17 @@ export class ChatsController {
   // GET /chats/active/running
   // Lấy danh sách các đơn đang hoạt động
   // ─────────────────────────────────────────────────────────────────
+  @Get('active/running')
+  @UseGuards(JwtAuthGuard)
+  async getActiveRunningSessions(@Req() req) {
+    const userId = Number(req.user.id || req.user.userId || req.user.sub);
+    return this.chatsService.getActiveRunningSessions(userId);
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // GET /chats/user/history
+  // Lấy lịch sử sửa chữa của khách hàng
+  // ─────────────────────────────────────────────────────────────────
   @Get('user/history')
   @UseGuards(JwtAuthGuard)
   async getUserRepairHistory(@Req() req) {

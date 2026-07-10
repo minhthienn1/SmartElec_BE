@@ -43,20 +43,17 @@ export class JobDispatchProcessor extends WorkerHost {
 
     // 2. Tìm thợ
     const customer = session.user;
-    if (!customer.latitude || !customer.longitude) {
-      this.logger.warn(
-        `❌ Customer #${customer.id} has no lat/lng. Dispatching to all online technicians.`,
-      );
+    const latitude = session.latitude || customer.latitude;
+    const longitude = session.longitude || customer.longitude;
+
+    if (!latitude || !longitude) {
+      this.logger.warn(`❌ Session #${session.id} has no lat/lng. Dispatching to all online technicians.`);
       await this.dispatchToAllOnline(session, attempt);
       return;
     }
 
     const radius = attempt === 1 ? 10 : 30; // 10km và 30km chuẩn thực tế Việt Nam
-    const technicians = await this.findNearbyTechnicians(
-      customer.latitude,
-      customer.longitude,
-      radius,
-    );
+    const technicians = await this.findNearbyTechnicians(latitude, longitude, radius);
 
     if (technicians.length > 0) {
       this.logger.log(

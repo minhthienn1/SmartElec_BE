@@ -604,11 +604,7 @@ export class ChatsService {
             },
             {
               OR: [
-                {
-                  status: {
-                    notIn: [JobStatus.COMPLETED, JobStatus.CANCELLED],
-                  },
-                },
+                { status: { notIn: ['COMPLETED', 'DONE', 'CANCELLED'] } }, // Đang làm (không phải COMPLETED, DONE hay CANCELLED) thì hiện cho cả 2
                 {
                   AND: [
                     { userId },
@@ -623,23 +619,16 @@ export class ChatsService {
         orderBy: { updatedAt: 'desc' },
         include: {
           user: {
-            select: {
+            select:
+            {
               id: true,
               fullName: true,
               avatarUrl: true,
-              role: true,
-            },
+              role: true
+            }
           },
-          technician: {
-            select: {
-              id: true,
-              fullName: true,
-              avatarUrl: true,
-              role: true,
-              phoneNumber: true,
-            },
-          },
-          review: true,
+          technician: { select: { id: true, fullName: true, avatarUrl: true, role: true, phoneNumber: true, averageRating: true, totalReviews: true } },
+          review: true, // Thêm include review để check
           messages: {
             orderBy: { createdAt: 'desc' },
             take: 1,
@@ -665,23 +654,16 @@ export class ChatsService {
     return this.prisma.chatSession.findUnique({
       where: { id: sessionId },
       include: {
-        user: {
+        user:
+        {
           select: {
             id: true,
             fullName: true,
             avatarUrl: true,
-            role: true,
-          },
+            role: true
+          }
         },
-        technician: {
-          select: {
-            id: true,
-            fullName: true,
-            avatarUrl: true,
-            role: true,
-            phoneNumber: true,
-          },
-        },
+        technician: { select: { id: true, fullName: true, avatarUrl: true, role: true, phoneNumber: true, averageRating: true, totalReviews: true } },
         review: true,
       },
     });
@@ -796,13 +778,10 @@ export class ChatsService {
           );
         }
 
-        if (
-          session.status === JobStatus.COMPLETED ||
-          session.status === JobStatus.CANCELLED
-        ) {
-          throw new BadRequestException(
-            'Đơn hàng đã đóng, không thể gửi thêm tin nhắn.',
-          );
+        if (session.status === 'COMPLETED' ||
+          session.status === 'CANCELLED' ||
+          session.status === 'DONE') {
+          throw new BadRequestException('Đơn hàng đã đóng, không thể gửi thêm tin nhắn.');
         }
 
         return tx.message.create({
@@ -1596,6 +1575,12 @@ export class ChatsService {
         },
       });
 
+      // Bước 4: Đánh dấu đơn hàng là DONE (Đã hoàn tất trọn vẹn)
+      await tx.chatSession.update({
+        where: { id: sessionId },
+        data: { status: 'DONE' },
+      });
+
       this.logger.log(
         `⭐ [Review] Đơn #${sessionId} → Thợ #${technicianId} nhận đánh giá ${dto.rating}/5. Trung bình mới: ${newAvg.toFixed(1)} (${newCount} lượt)`,
       );
@@ -2060,13 +2045,40 @@ export class ChatsService {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // ĐƠN ĐANG HOẠT ĐỘNG CỦA KHÁCH HÀNG
+  // ─────────────────────────────────────────────────────────────────
+  async getActiveRunningSessions(userId: number) {
+    const sessions = await this.prisma.chatSession.findMany({
+      where: {
+        userId: userId,
+        status: {
+          in: ['BROADCASTING', 'MATCHED', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS']
+        }
+      },
+      orderBy: { updatedAt: 'desc' },
+      include: {
+        device: { select: { category: true } },
+        technician: { select: { id: true, fullName: true, avatarUrl: true, role: true, phoneNumber: true, averageRating: true, totalReviews: true } }
+      }
+    });
+    return sessions;
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // LỊCH SỬ SỬA CHỮA CỦA KHÁCH HÀNG
+  // ─────────────────────────────────────────────────────────────────
   async getUserRepairHistory(userId: number) {
     const sessions = await this.prisma.chatSession.findMany({
       where: {
-        userId,
-        technicianId: { not: null },
-        status: {
-          in: [JobStatus.COMPLETED],
+        userId: userId,
+        status: { in: ['COMPLETED', 'DONE'] },
+        isHiddenByCustomer: false, // Ẩn những ca mà khách đã xóa/ẩn
+      },
+      orderBy: { updatedAt: 'desc' },
+      include: {
+        technician: {
+          select: { id: true, fullName: true, phoneNumber: true, averageRating: true }
         },
       },
       orderBy: {
