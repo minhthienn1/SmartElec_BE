@@ -20,6 +20,9 @@ export class AiController {
 
   constructor(private readonly aiService: AiService) {}
 
+  // ─────────────────────────────────────────────────────────────────
+  // POST /ai/chat  — Dành cho KHÁCH HÀNG (SmartElec Buddy)
+  // ─────────────────────────────────────────────────────────────────
   @UseGuards(JwtAuthGuard, ThrottlerGuard)
   @Throttle({ ai_chat: { limit: 1, ttl: 3000 } })
   @Post('chat')
@@ -42,10 +45,8 @@ export class AiController {
       );
     }
 
-    // Chuyển đổi sessionId sang kiểu số (number), nếu không có hoặc truyền lên null/undefined thì để là null
     const sessionIdParam = body.sessionId ? Number(body.sessionId) : null;
 
-    // ĐƯA sessionIdParam VÀO VỊ TRÍ THỨ 3 (Đúng thứ tự hàm chatWithAI mới sửa ở ai.service.ts)
     return this.aiService.chatWithAI(
       userId,
       body.message,
@@ -53,6 +54,35 @@ export class AiController {
       body.image,
       body.history || [],
       body.state || null,
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // POST /ai/tech-chat  — Dành riêng cho THỢ KỸ THUẬT (SmartElec Pro)
+  // Prompt ADVANCED, RAG không giới hạn, không có booking flow
+  // ─────────────────────────────────────────────────────────────────
+  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @Throttle({ ai_chat: { limit: 1, ttl: 3000 } })
+  @Post('tech-chat')
+  async techChat(
+    @Req() req,
+    @Body() body: { message: string; image?: string; history?: any[] }
+  ) {
+    const userId = Number(req.user?.id || req.user?.userId || req.user?.sub);
+    if (!userId || isNaN(userId)) {
+      this.logger.error(`[Tech] Lỗi JWT: ${JSON.stringify(req.user)}`);
+      throw new BadRequestException('Lỗi xác thực: Không tìm thấy ID người dùng.');
+    }
+
+    if (!body.message || body.message.trim() === '') {
+      throw new BadRequestException('Vui lòng nhập câu hỏi kỹ thuật.');
+    }
+
+    return this.aiService.chatWithAI_Tech(
+      userId,
+      body.message,
+      body.image,
+      body.history || [],
     );
   }
 
