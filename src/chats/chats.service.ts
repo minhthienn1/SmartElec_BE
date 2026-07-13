@@ -2075,12 +2075,6 @@ export class ChatsService {
         status: { in: ['COMPLETED', 'DONE'] },
         isHiddenByCustomer: false, // Ẩn những ca mà khách đã xóa/ẩn
       },
-      orderBy: { updatedAt: 'desc' },
-      include: {
-        technician: {
-          select: { id: true, fullName: true, phoneNumber: true, averageRating: true }
-        },
-      },
       orderBy: {
         updatedAt: 'desc',
       },
