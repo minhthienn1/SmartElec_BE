@@ -2,6 +2,8 @@ import {
   Controller,
   Post,
   Patch,
+  Get,
+  Delete,
   Body,
   Param,
   ParseIntPipe,
@@ -87,6 +89,31 @@ export class AiController {
   }
 
   // ─────────────────────────────────────────────────────────────────
+  // GET /ai/tech-history — Lấy lịch sử chat AI của thợ
+  // ─────────────────────────────────────────────────────────────────
+  @UseGuards(JwtAuthGuard)
+  @Get('tech-history')
+  async getTechHistory(@Req() req) {
+    const userId = Number(req.user?.id || req.user?.userId || req.user?.sub);
+    if (!userId || isNaN(userId)) throw new BadRequestException('Lỗi xác thực');
+    return this.aiService.getTechHistory(userId);
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // DELETE /ai/tech-history/:id — Xóa lịch sử chat AI của thợ
+  // ─────────────────────────────────────────────────────────────────
+  @UseGuards(JwtAuthGuard)
+  @Delete('tech-history/:id')
+  async deleteTechHistory(
+    @Req() req,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    const userId = Number(req.user?.id || req.user?.userId || req.user?.sub);
+    if (!userId || isNaN(userId)) throw new BadRequestException('Lỗi xác thực');
+    return this.aiService.deleteTechHistory(userId, id);
+  }
+
+  // ─────────────────────────────────────────────────────────────────
   // PATCH /ai/messages/:logId/feedback
   // Lưu Like/Dislike vào AiReasoningLog (RLHF)
   // ─────────────────────────────────────────────────────────────────
@@ -100,5 +127,25 @@ export class AiController {
       throw new BadRequestException('feedback phải là "LIKE" hoặc "DISLIKE".');
     }
     return this.aiService.saveFeedback(logId, feedback as 'LIKE' | 'DISLIKE');
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // POST /ai/tech-history/:id/rate — Đánh giá phiên chat AI của thợ
+  // ─────────────────────────────────────────────────────────────────
+  @UseGuards(JwtAuthGuard)
+  @Post('tech-history/:id/rate')
+  async rateTechHistory(
+    @Req() req,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { score: number; comment?: string }
+  ) {
+    const userId = Number(req.user?.id || req.user?.userId || req.user?.sub);
+    if (!userId || isNaN(userId)) throw new BadRequestException('Lỗi xác thực');
+    
+    if (!body.score || body.score < 1 || body.score > 5) {
+      throw new BadRequestException('Điểm đánh giá phải nằm trong khoảng từ 1 đến 5 sao.');
+    }
+
+    return this.aiService.rateTechHistory(userId, id, body.score, body.comment);
   }
 }
