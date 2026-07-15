@@ -40,17 +40,17 @@ import { TechnicianModule } from './technician/technician.module';
     ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([{
       name: 'ai_chat',
-      ttl: 3000, 
-      limit: 1,  
+      ttl: 3000,
+      limit: 1,
     }, {
       name: 'normal_chat',
       ttl: 1000,
       limit: 5,
     }]),
-    AuthModule, 
-    UsersModule, 
-    PrismaModule, 
-    ChatHistoryModule, 
+    AuthModule,
+    UsersModule,
+    PrismaModule,
+    ChatHistoryModule,
     DevicesModule,
     ChatsModule,
     UploadModule,
@@ -65,5 +65,4 @@ import { TechnicianModule } from './technician/technician.module';
   controllers: [AppController],
   providers: [AppService],
 })
-export class AppModule {}
-
+export class AppModule { }

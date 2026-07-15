@@ -31,7 +31,7 @@ class SaveHistoryDto {
 @Controller('chats')
 @UseGuards(AuthGuard('jwt')) // Dùng AuthGuard('jwt') thay vì import guard trực tiếp → linh hoạt hơn
 export class ChatHistoryController {
-  constructor(private readonly chatHistoryService: ChatHistoryService) {}
+  constructor(private readonly chatHistoryService: ChatHistoryService) { }
 
   /**
    * POST /chats/save

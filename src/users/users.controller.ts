@@ -41,6 +41,11 @@ export class UsersController {
     @Body('isOnline') isOnline?: boolean,
   ) {
     const userId = Number(req.user.sub || req.user.userId || req.user.id);
-    return this.usersService.toggleOnline(userId, latitude, longitude, isOnline);
+    return this.usersService.toggleOnline(
+      userId,
+      latitude,
+      longitude,
+      isOnline,
+    );
   }
 }

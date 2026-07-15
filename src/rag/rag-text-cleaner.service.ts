@@ -25,63 +25,77 @@ export class RagTextCleanerService {
   }
 
   private cleanLine(line: string): string {
-    return line
-      .trim()
+    const preservedIndent = line.match(/^\s*/)?.[0] ?? '';
 
-      // Xóa marker trang kiểu: -- 27 of 66 --
+    const cleaned = line
+      .trimEnd()
       .replace(/^\s*--\s*\d+\s+of\s+\d+\s*--\s*$/gi, '')
-
-      // Xóa lỗi bookmark/reference của Word/PDF.
       .replace(/Error!\s*Bookmark\s*not\s*defined\.?/gi, '')
       .replace(/Error!\s*Reference\s*source\s*not\s*found\.?/gi, '')
-
-      // Xóa dotted leader kiểu mục lục.
-      // Ví dụ: "1.8. Ổ đĩa mềm ............ 12"
       .replace(/\.{4,}\s*\d+\s*$/g, '')
-
-      // Xóa dotted leader còn sót giữa dòng.
       .replace(/\.{5,}/g, ' ')
-
-      // Gom khoảng trắng.
       .replace(/[ \t]{2,}/g, ' ')
-      .trim();
+      .trimEnd();
+
+    if (!cleaned.trim()) {
+      return '';
+    }
+
+    // Giữ lại indentation vừa phải cho bullet/list để không làm phẳng cấu trúc.
+    if (/^\s*[-*+•◦]\s+/.test(line) || /^\s*\d+[.)]\s+/.test(line)) {
+      return `${preservedIndent}${cleaned.trimStart()}`.trimEnd();
+    }
+
+    return cleaned.trim();
+  }
+
+  private isLikelyTechnicalShortLine(line: string): boolean {
+    const compact = line.trim();
+
+    if (!compact || compact.length > 80) {
+      return false;
+    }
+
+    return (
+      /^[A-Z]{1,4}\d{0,4}([-_/][A-Z0-9]{1,6})?$/i.test(compact) ||
+      /^\d+([.,]\d+)?\s?(v|w|kw|a|ma|hz|rpm|mm|cm|m|kg|bar|psi|°c|%)$/i.test(compact) ||
+      /^[A-Z]?\d{1,4}([.-][A-Z0-9]{1,6})?$/.test(compact)
+    );
   }
 
   private shouldKeepLine(line: string): boolean {
-    if (!line) {
+    const trimmed = line.trim();
+
+    if (!trimmed) {
       return false;
     }
 
-    // Bỏ dòng chỉ có số trang.
-    if (/^\d+$/.test(line)) {
+    if (this.isLikelyTechnicalShortLine(trimmed)) {
+      return true;
+    }
+
+    if (/^\d+$/.test(trimmed)) {
       return false;
     }
 
-    // Bỏ dòng chỉ có 2 số rời kiểu: "11 19".
-    if (/^\d+\s+\d+$/.test(line)) {
+    if (/^\d+\s+\d+$/.test(trimmed)) {
       return false;
     }
 
-    // Bỏ dòng trang trí.
-    if (/^[-–—_=*•·]{4,}$/.test(line)) {
+    if (/^[-–—_=*•·]{4,}$/.test(trimmed)) {
       return false;
     }
 
-    // Bỏ dòng chỉ toàn dấu chấm.
-    if (/^\.{4,}$/.test(line)) {
+    if (/^\.{4,}$/.test(trimmed)) {
       return false;
     }
 
-    // Bỏ dòng sau khi xóa Error Bookmark mà chỉ còn mục lục ngắn/rỗng rác.
-    // Ví dụ: "1 :" hoặc "1.8. Ổ đĩa mềm .."
-    if (/^\d+(\.\d+)*\s*[:.)-]?\s*$/.test(line)) {
+    if (/^\d+(\.\d+)*\s*[:.)-]?\s*$/.test(trimmed)) {
       return false;
     }
 
-    // Bỏ dòng nhiều ký tự nhưng gần như không có chữ/số có nghĩa.
-    const meaningfulChars = line.replace(/[^A-Za-zÀ-ỹ0-9]/g, '');
-
-    if (line.length >= 10 && meaningfulChars.length < 3) {
+    const meaningfulChars = trimmed.replace(/[^\p{L}\p{N}]/gu, '');
+    if (trimmed.length >= 10 && meaningfulChars.length < 3) {
       return false;
     }
 

@@ -1,5 +1,6 @@
 import { Transform } from 'class-transformer';
 import {
+  ArrayMaxSize,
   IsArray,
   IsEnum,
   IsOptional,
@@ -7,6 +8,16 @@ import {
   MaxLength,
 } from 'class-validator';
 import { AccessLevel, RagDocumentKind } from '@prisma/client';
+import { RAG_LIMITS } from '../rag.constants';
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  const trimmed = String(value).trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
 
 function normalizeTags(value: unknown): string[] | undefined {
   if (value === undefined || value === null || value === '') {
@@ -47,12 +58,15 @@ function normalizeTags(value: unknown): string[] | undefined {
 
 export class ImportRagFileDto {
   @IsOptional()
+  @Transform(({ value }) => normalizeOptionalString(value))
   @IsString()
-  @MaxLength(200)
+  @MaxLength(RAG_LIMITS.MAX_TEXT_FIELD_CHARS)
   title?: string;
 
   @IsOptional()
+  @Transform(({ value }) => normalizeOptionalString(value))
   @IsString()
+  @MaxLength(RAG_LIMITS.MAX_DESCRIPTION_CHARS)
   description?: string;
 
   @IsOptional()
@@ -60,29 +74,35 @@ export class ImportRagFileDto {
   kind?: RagDocumentKind;
 
   @IsOptional()
+  @Transform(({ value }) => normalizeOptionalString(value))
   @IsString()
-  @MaxLength(120)
+  @MaxLength(RAG_LIMITS.MAX_TEXT_FIELD_CHARS)
   category?: string;
 
   @IsOptional()
+  @Transform(({ value }) => normalizeOptionalString(value))
   @IsString()
-  @MaxLength(120)
+  @MaxLength(RAG_LIMITS.MAX_TEXT_FIELD_CHARS)
   brand?: string;
 
   @IsOptional()
+  @Transform(({ value }) => normalizeOptionalString(value))
   @IsString()
-  @MaxLength(120)
+  @MaxLength(RAG_LIMITS.MAX_TEXT_FIELD_CHARS)
   modelCode?: string;
 
   @IsOptional()
+  @Transform(({ value }) => normalizeOptionalString(value))
   @IsString()
-  @MaxLength(200)
+  @MaxLength(RAG_LIMITS.MAX_TEXT_FIELD_CHARS)
   source?: string;
 
   @IsOptional()
   @Transform(({ value }) => normalizeTags(value))
   @IsArray()
+  @ArrayMaxSize(RAG_LIMITS.MAX_TAGS)
   @IsString({ each: true })
+  @MaxLength(RAG_LIMITS.MAX_TAG_LENGTH, { each: true })
   tags?: string[];
 
   @IsOptional()

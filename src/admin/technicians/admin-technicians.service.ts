@@ -44,7 +44,9 @@ export class AdminTechniciansService {
     return technicians.map((technician) => {
       const activeStatuses = ['MATCHED', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'];
       const currentJob =
-        technician.technicianSessions.find((item) => activeStatuses.includes(item.status)) ?? null;
+        technician.technicianSessions.find((item) =>
+          activeStatuses.includes(item.status),
+        ) ?? null;
 
       return {
         id: String(technician.id),
@@ -64,9 +66,15 @@ export class AdminTechniciansService {
         createdAt: technician.createdAt.toISOString(),
         averageRating: technician.averageRating ?? 0,
         totalReviews: technician.totalReviews ?? 0,
-        activeJobCount: technician.technicianSessions.filter((item) => activeStatuses.includes(item.status)).length,
-        completedJobCount: technician.technicianSessions.filter((item) => ['COMPLETED', 'DONE'].includes(item.status)).length,
-        cancelledJobCount: technician.technicianSessions.filter((item) => item.status === 'CANCELLED').length,
+        activeJobCount: technician.technicianSessions.filter((item) =>
+          activeStatuses.includes(item.status),
+        ).length,
+        completedJobCount: technician.technicianSessions.filter((item) =>
+          ['COMPLETED', 'DONE'].includes(item.status),
+        ).length,
+        cancelledJobCount: technician.technicianSessions.filter(
+          (item) => item.status === 'CANCELLED',
+        ).length,
         currentJob: currentJob
           ? {
               id: String(currentJob.id),

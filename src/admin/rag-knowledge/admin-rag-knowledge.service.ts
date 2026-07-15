@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ArchiveRagDocumentDto } from '../../rag/dto/archive-rag-document.dto';
 import { IngestDocumentDto } from '../../rag/dto/ingest-document.dto';
+import { UpdateRagDocumentDto } from '../../rag/dto/update-rag-document.dto';
 import { ImportRagFileDto } from '../../rag/dto/import-rag-file.dto';
 import { RagDocumentChunksQueryDto } from '../../rag/dto/rag-document-chunks-query.dto';
 import { RagIngestionService } from '../../rag/rag-ingestion.service';
@@ -37,7 +38,7 @@ export class AdminRagKnowledgeService {
     return this.ragService.ingestDocument(dto);
   }
 
-  updateDocument(id: number, dto: IngestDocumentDto) {
+  updateDocument(id: number, dto: UpdateRagDocumentDto) {
     return this.ragService.updateDocument(id, dto);
   }
 
@@ -59,5 +60,9 @@ export class AdminRagKnowledgeService {
     uploadedById?: number,
   ) {
     return this.ragIngestionService.importFile(file, dto, uploadedById);
+  }
+
+  suggestImportMetadata(file: Express.Multer.File) {
+    return this.ragIngestionService.suggestImportMetadata(file);
   }
 }

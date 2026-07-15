@@ -16,6 +16,7 @@ import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { AdminAccountsService } from './admin-accounts.service';
 import { CreateAdminAccountDto } from './dto/create-admin-account.dto';
 import { UpdateAdminAccountDto } from './dto/update-admin-account.dto';
+import { VerifyAccountEmailOtpDto } from './dto/verify-account-email-otp.dto';
 
 @UseGuards(JwtAuthGuard)
 @Controller('admin/accounts')
@@ -62,7 +63,10 @@ export class AdminAccountsController {
     @Param('id', ParseIntPipe) accountId: number,
     @Body() payload: UpdateAdminAccountDto,
   ) {
-    const account = await this.adminAccountsService.updateAccount(accountId, payload);
+    const account = await this.adminAccountsService.updateAccount(
+      accountId,
+      payload,
+    );
 
     if (!account) {
       throw new NotFoundException('Khong tim thay tai khoan.');
@@ -86,6 +90,21 @@ export class AdminAccountsController {
     return this.adminAccountsService.verifyAccount(accountId);
   }
 
+  @Post(':id/verify/request-otp')
+  requestAccountVerificationOtp(
+    @Param('id', ParseIntPipe) accountId: number,
+  ) {
+    return this.adminAccountsService.requestAccountVerificationOtp(accountId);
+  }
+
+  @Post(':id/verify/confirm-otp')
+  verifyAccountWithOtp(
+    @Param('id', ParseIntPipe) accountId: number,
+    @Body() body: VerifyAccountEmailOtpDto,
+  ) {
+    return this.adminAccountsService.verifyAccountWithOtp(accountId, body.otp);
+  }
+
   @Post(':id/unverify')
   unverifyAccount(@Param('id', ParseIntPipe) accountId: number) {
     return this.adminAccountsService.unverifyAccount(accountId);
@@ -104,7 +123,10 @@ export class AdminAccountsController {
     @Param('id', ParseIntPipe) accountId: number,
     @Body() body: { password: string },
   ) {
-    return this.adminAccountsService.resetAccountPassword(accountId, body.password);
+    return this.adminAccountsService.resetAccountPassword(
+      accountId,
+      body.password,
+    );
   }
 
   @Delete(':id')

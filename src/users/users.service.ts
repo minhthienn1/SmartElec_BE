@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { Gender } from '@prisma/client'; 
+import { Gender } from '@prisma/client';
 
 @Injectable()
 export class UsersService {
@@ -26,7 +26,15 @@ export class UsersService {
     return user;
   }
 
-  async updateProfile(id: number, data: { fullName?: string, email?: string, address?: string, gender?: string }) {
+  async updateProfile(
+    id: number,
+    data: {
+      fullName?: string;
+      email?: string;
+      address?: string;
+      gender?: string;
+    },
+  ) {
     return this.prisma.user.update({
       where: { id },
       data: {
@@ -66,13 +74,18 @@ export class UsersService {
     });
   }
 
-  async toggleOnline(userId: number, lat?: number, lng?: number, isOnline?: boolean) {
+  async toggleOnline(
+    userId: number,
+    lat?: number,
+    lng?: number,
+    isOnline?: boolean,
+  ) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new NotFoundException('User not found');
-    
+
     return this.prisma.user.update({
       where: { id: userId },
-      data: { 
+      data: {
         isOnline: isOnline !== undefined ? isOnline : !user.isOnline,
         lastLogin: new Date(),
         ...(lat && { latitude: lat }),

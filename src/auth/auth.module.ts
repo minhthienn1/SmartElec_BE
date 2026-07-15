@@ -6,6 +6,9 @@ import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { JwtStrategy } from './jwt.strategy';
 import { PrismaModule } from '../prisma/prisma.module';
+import { ForgotPasswordOtpStore } from './forgot-password-otp.store';
+import { InMemoryForgotPasswordOtpStore } from './in-memory-forgot-password-otp.store';
+import { MailService } from './mail.service';
 
 @Module({
   imports: [
@@ -19,7 +22,15 @@ import { PrismaModule } from '../prisma/prisma.module';
       },
     }),
   ],
-  providers: [AuthService, JwtStrategy],
+  providers: [
+    AuthService,
+    JwtStrategy,
+    MailService,
+    {
+      provide: ForgotPasswordOtpStore,
+      useClass: InMemoryForgotPasswordOtpStore,
+    },
+  ],
   controllers: [AuthController],
 })
 export class AuthModule {}

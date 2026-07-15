@@ -1,4 +1,15 @@
-import { Controller, Post, Patch, Body, Param, ParseIntPipe, UseGuards, Req, Logger, BadRequestException } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Patch,
+  Body,
+  Param,
+  ParseIntPipe,
+  UseGuards,
+  Req,
+  Logger,
+  BadRequestException,
+} from '@nestjs/common';
 import { AiService } from './ai.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ThrottlerGuard, Throttle } from '@nestjs/throttler';
@@ -6,7 +17,7 @@ import { ThrottlerGuard, Throttle } from '@nestjs/throttler';
 @Controller('ai')
 export class AiController {
   private readonly logger = new Logger(AiController.name);
-  
+
   constructor(private readonly aiService: AiService) {}
 
   // ─────────────────────────────────────────────────────────────────
@@ -16,23 +27,33 @@ export class AiController {
   @Throttle({ ai_chat: { limit: 1, ttl: 3000 } })
   @Post('chat')
   async chat(
-    @Req() req, 
-    @Body() body: { message: string; sessionId?: string | number; image?: string; history?: any[] }
+    @Req() req,
+    @Body()
+    body: {
+      message: string;
+      sessionId?: string | number;
+      image?: string;
+      history?: any[];
+      state?: Record<string, any> | null;
+    },
   ) {
     const userId = Number(req.user?.id || req.user?.userId || req.user?.sub);
     if (!userId || isNaN(userId)) {
       this.logger.error(`Lỗi JWT: ${JSON.stringify(req.user)}`);
-      throw new BadRequestException('Lỗi xác thực: Không tìm thấy ID người dùng.');
+      throw new BadRequestException(
+        'Lỗi xác thực: Không tìm thấy ID người dùng.',
+      );
     }
 
     const sessionIdParam = body.sessionId ? Number(body.sessionId) : null;
 
     return this.aiService.chatWithAI(
-      userId, 
-      body.message, 
-      sessionIdParam, 
-      body.image, 
-      body.history || []
+      userId,
+      body.message,
+      sessionIdParam,
+      body.image,
+      body.history || [],
+      body.state || null,
     );
   }
 

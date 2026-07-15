@@ -1,15 +1,26 @@
 export const RAG_LIMITS = {
   // Upload/file limits
-  MAX_FILE_SIZE_BYTES: 10 * 1024 * 1024,
+  MAX_FILE_SIZE_BYTES: 50 * 1024 * 1024,
+  MAX_FILENAME_CHARS: 255,
 
   // Parsed text limits
   MAX_PARSED_TEXT_CHARS: 500_000,
+  MAX_DESCRIPTION_CHARS: 2_000,
 
   // Chunking limits
   MAX_CHUNKS_PER_DOCUMENT: 300,
   MIN_CHUNK_CHARS: 180,
   DEFAULT_CHUNK_MAX_CHARS: 1_800,
-  DEFAULT_CHUNK_OVERLAP_CHARS: 0,
+  DEFAULT_CHUNK_OVERLAP_CHARS: 160,
+
+  // Metadata limits
+  MAX_TAGS: 20,
+  MAX_TAG_LENGTH: 50,
+  MAX_TEXT_FIELD_CHARS: 200,
+
+  // Spreadsheet parser limits
+  MAX_WORKBOOK_SHEETS: 20,
+  MAX_WORKBOOK_ROWS: 5_000,
 
   // Gemini Embedding throttle/retry
   EMBEDDING_BATCH_CONCURRENCY: 1,
@@ -47,7 +58,7 @@ export const ALLOWED_RAG_IMPORT_MIME_TYPES = new Set([
 
   /*
     Một số browser/Windows upload file với MIME application/octet-stream.
-    Chỉ nên cho phép MIME này nếu code validate thêm extension.
+    Chỉ nên cho phép MIME này nếu code validate thêm extension và signature.
   */
   'application/octet-stream',
 ]);

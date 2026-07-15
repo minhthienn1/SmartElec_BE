@@ -1,15 +1,23 @@
-import { IsNotEmpty, IsString, IsOptional } from 'class-validator';
+import { IsIn, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 export class ZaloLoginDto {
-  @IsNotEmpty({ message: 'Zalo ID không được để trống' })
+  @IsNotEmpty({ message: 'OAuth code không được để trống' })
   @IsString()
-  zaloId!: string;
+  code!: string;
+
+  @IsNotEmpty({ message: 'Code verifier không được để trống' })
+  @IsString()
+  codeVerifier!: string;
 
   @IsOptional()
   @IsString()
-  name?: string;
+  redirectUri?: string;
 
   @IsOptional()
   @IsString()
-  avatarUrl?: string;
+  state?: string;
+
+  @IsOptional()
+  @IsIn(['WEB', 'ANDROID', 'IOS'])
+  platform?: 'WEB' | 'ANDROID' | 'IOS';
 }

@@ -1,9 +1,15 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Gender, Prisma, UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateAdminAccountDto } from './dto/create-admin-account.dto';
 import { UpdateAdminAccountDto } from './dto/update-admin-account.dto';
+import { ForgotPasswordOtpStore } from '../../auth/forgot-password-otp.store';
+import { MailService } from '../../auth/mail.service';
 
 type AccountListQuery = {
   keyword?: string;
@@ -16,9 +22,17 @@ type AccountListQuery = {
 
 @Injectable()
 export class AdminAccountsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly otpStore: ForgotPasswordOtpStore,
+    private readonly mailService: MailService,
+  ) {}
 
   private readonly saltRounds = 10;
+
+  private getVerificationOtpKey(accountId: number, email: string) {
+    return `admin-account-verify:${accountId}:${email}`;
+  }
 
   private buildWhere(query: AccountListQuery): Prisma.UserWhereInput {
     const where: Prisma.UserWhereInput = {};
@@ -83,9 +97,13 @@ export class AdminAccountsService {
     };
   }) {
     const repairJobsCount =
-      user.role === 'TECHNICIAN' ? user._count.technicianSessions : user._count.chatSessions;
+      user.role === 'TECHNICIAN'
+        ? user._count.technicianSessions
+        : user._count.chatSessions;
     const reviewsCount =
-      user.role === 'TECHNICIAN' ? user._count.reviewsReceived : user._count.reviewsGiven;
+      user.role === 'TECHNICIAN'
+        ? user._count.reviewsReceived
+        : user._count.reviewsGiven;
 
     return {
       id: String(user.id),
@@ -297,7 +315,8 @@ export class AdminAccountsService {
       unverified: summarySource.filter((item) => !item.isVerified).length,
       online: summarySource.filter((item) => item.isOnline).length,
       customers: summarySource.filter((item) => item.role === 'USER').length,
-      technicians: summarySource.filter((item) => item.role === 'TECHNICIAN').length,
+      technicians: summarySource.filter((item) => item.role === 'TECHNICIAN')
+        .length,
       admins: summarySource.filter((item) => item.role === 'ADMIN').length,
     };
 
@@ -317,7 +336,10 @@ export class AdminAccountsService {
   async updateAccount(accountId: number, payload: UpdateAdminAccountDto) {
     const current = await this.getExistingAccount(accountId);
 
-    const nextEmail = payload.email === undefined ? undefined : this.normalizeOptionalString(payload.email);
+    const nextEmail =
+      payload.email === undefined
+        ? undefined
+        : this.normalizeOptionalString(payload.email);
 
     if (nextEmail && nextEmail !== current.email) {
       const existedByEmail = await this.prisma.user.findUnique({
@@ -333,15 +355,30 @@ export class AdminAccountsService {
     await this.prisma.user.update({
       where: { id: accountId },
       data: {
-        fullName: payload.fullName !== undefined ? this.normalizeOptionalString(payload.fullName) : undefined,
+        fullName:
+          payload.fullName !== undefined
+            ? this.normalizeOptionalString(payload.fullName)
+            : undefined,
         gender: payload.gender,
         email: nextEmail,
-        avatarUrl: payload.avatarUrl !== undefined ? this.normalizeOptionalString(payload.avatarUrl) : undefined,
-        address: payload.address !== undefined ? this.normalizeOptionalString(payload.address) : undefined,
+        avatarUrl:
+          payload.avatarUrl !== undefined
+            ? this.normalizeOptionalString(payload.avatarUrl)
+            : undefined,
+        address:
+          payload.address !== undefined
+            ? this.normalizeOptionalString(payload.address)
+            : undefined,
         isVerified: payload.isVerified,
         isActive: payload.isActive,
-        latitude: payload.latitude !== undefined ? this.normalizeOptionalNumber(payload.latitude) : undefined,
-        longitude: payload.longitude !== undefined ? this.normalizeOptionalNumber(payload.longitude) : undefined,
+        latitude:
+          payload.latitude !== undefined
+            ? this.normalizeOptionalNumber(payload.latitude)
+            : undefined,
+        longitude:
+          payload.longitude !== undefined
+            ? this.normalizeOptionalNumber(payload.longitude)
+            : undefined,
       },
     });
 
@@ -360,6 +397,80 @@ export class AdminAccountsService {
 
   /** Đánh dấu tài khoản đã được xác minh thủ công từ phía admin. */
   verifyAccount(accountId: number) {
+    return this.updateAccountFlags(accountId, { isVerified: true });
+  }
+
+  async requestAccountVerificationOtp(accountId: number) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: accountId },
+      select: {
+        id: true,
+        email: true,
+        isVerified: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Không tìm thấy tài khoản.');
+    }
+
+    if (!user.email) {
+      throw new ConflictException(
+        'Tài khoản chưa có email để thực hiện xác minh.',
+      );
+    }
+
+    if (user.isVerified) {
+      throw new ConflictException('Tài khoản đã được xác minh.');
+    }
+
+    const otp = `${Math.floor(100000 + Math.random() * 900000)}`;
+    const ttlMs = Number(
+      process.env.EMAIL_VERIFICATION_OTP_TTL_MS ?? 5 * 60 * 1000,
+    );
+    const otpKey = this.getVerificationOtpKey(user.id, user.email);
+
+    await this.otpStore.save(otpKey, otp, ttlMs);
+    await this.mailService.sendEmailVerificationOtp(user.email, otp);
+
+    return {
+      message: 'Đã gửi mã OTP xác minh tới email của tài khoản.',
+    };
+  }
+
+  async verifyAccountWithOtp(accountId: number, otp: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: accountId },
+      select: {
+        id: true,
+        email: true,
+        isVerified: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Không tìm thấy tài khoản.');
+    }
+
+    if (!user.email) {
+      throw new ConflictException(
+        'Tài khoản chưa có email để thực hiện xác minh.',
+      );
+    }
+
+    if (user.isVerified) {
+      throw new ConflictException('Tài khoản đã được xác minh.');
+    }
+
+    const otpKey = this.getVerificationOtpKey(user.id, user.email);
+    const record = await this.otpStore.get(otpKey);
+
+    if (!record || record.otp !== otp) {
+      throw new ConflictException('OTP xác minh không hợp lệ hoặc đã hết hạn.');
+    }
+
+    await this.otpStore.delete(otpKey);
+
     return this.updateAccountFlags(accountId, { isVerified: true });
   }
 

@@ -41,6 +41,7 @@ model User {
   reviewsReceived      Review[]                   @relation("TechnicianReviews")
   reviewsGiven         Review[]                   @relation("UserReviews")
   assignmentHistories  SessionAssignmentHistory[]
+  reviewedReasoningLogs AiReasoningLog[]         @relation("AiReasoningLogReviewer")
 
   @@map("users")
 }
@@ -173,9 +174,17 @@ model AiReasoningLog {
   aiResponse      String?
   aiFeedback      String?
   score           Int                @default(0)
+  autoUsefulnessScore   Int?
+  autoUsefulnessLabel   UsefulnessLabel?
+  autoUsefulnessReasons String[]
+  humanUsefulnessLabel  UsefulnessLabel?
+  humanUsefulnessNote   String?
+  reviewedById          Int?
+  reviewedAt            DateTime?
   deviceCategory  String?
   isGolden        Boolean            @default(false)
   createdAt       DateTime           @default(now())
+  reviewedBy      User?              @relation("AiReasoningLogReviewer", fields: [reviewedById], references: [id])
   retrievedChunks AiRetrievedChunk[]
 
   @@map("ai_reasoning_logs")
@@ -367,6 +376,7 @@ enum RagFileType {
   CSV
   TXT
   MD
+
   HTML
   JSON
   UNKNOWN
@@ -379,4 +389,10 @@ enum RagDocumentKind {
   DEVICE_MANUAL
   FAQ
   INTERNAL_NOTE
+}
+
+enum UsefulnessLabel {
+  USEFUL
+  PARTIAL
+  NOT_USEFUL
 }

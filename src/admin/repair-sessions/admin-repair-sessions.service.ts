@@ -43,12 +43,16 @@ export class AdminRepairSessionsService {
     session: AdminChatSession,
     technicianName?: string | null,
   ) {
-    if (Array.isArray(session.assignmentHistories) && session.assignmentHistories.length > 0) {
+    if (
+      Array.isArray(session.assignmentHistories) &&
+      session.assignmentHistories.length > 0
+    ) {
       return session.assignmentHistories.map((item) => ({
         id: String(item.id),
         chatSessionId: String(session.id),
         technicianId: String(item.technicianId),
-        technicianName: item.technician?.fullName?.trim() || technicianName || undefined,
+        technicianName:
+          item.technician?.fullName?.trim() || technicianName || undefined,
         action: item.action,
         reason: undefined,
         createdAt: item.createdAt,
@@ -95,12 +99,15 @@ export class AdminRepairSessionsService {
         id: `status-${session.id}-${session.status}`,
         status: session.status,
         title: `Chuyển trạng thái ${session.status}`,
-        description: session.aiSummary?.trim() || session.symptom?.trim() || undefined,
+        description:
+          session.aiSummary?.trim() || session.symptom?.trim() || undefined,
         createdAt: session.updatedAt,
       });
     }
 
-    return items.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    return items.sort((left, right) =>
+      right.createdAt.localeCompare(left.createdAt),
+    );
   }
 
   /** Chuẩn hóa session BE thành resource repair session riêng cho admin FE. */
@@ -110,10 +117,14 @@ export class AdminRepairSessionsService {
   ) {
     const technician =
       session.technicianId != null
-        ? this.mapTechnician(technicianMap.get(String(session.technicianId)) ?? null)
+        ? this.mapTechnician(
+            technicianMap.get(String(session.technicianId)) ?? null,
+          )
         : null;
     const customerName =
-      session.user?.fullName?.trim() || session.contactName?.trim() || 'Khách hàng';
+      session.user?.fullName?.trim() ||
+      session.contactName?.trim() ||
+      'Khách hàng';
     const customerPhone = session.contactPhone?.trim() || '--';
 
     return {
@@ -130,7 +141,8 @@ export class AdminRepairSessionsService {
       latitude: session.latitude ?? null,
       longitude: session.longitude ?? null,
       userId: String(session.userId),
-      technicianId: session.technicianId != null ? String(session.technicianId) : null,
+      technicianId:
+        session.technicianId != null ? String(session.technicianId) : null,
       deviceId: session.deviceId != null ? String(session.deviceId) : null,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
@@ -147,7 +159,10 @@ export class AdminRepairSessionsService {
       },
       technician,
       device: null,
-      assignmentHistory: this.buildAssignmentHistory(session, technician?.fullName),
+      assignmentHistory: this.buildAssignmentHistory(
+        session,
+        technician?.fullName,
+      ),
       statusTimeline: this.buildStatusTimeline(session),
     };
   }
@@ -156,7 +171,11 @@ export class AdminRepairSessionsService {
   async getRepairSessions() {
     const sessions = await this.adminChatsService.getChats({});
     const [details, technicians] = await Promise.all([
-      Promise.all(sessions.map((session) => this.adminChatsService.getChatById(session.id))),
+      Promise.all(
+        sessions.map((session) =>
+          this.adminChatsService.getChatById(session.id),
+        ),
+      ),
       this.adminTechniciansService.getTechnicians(),
     ]);
 

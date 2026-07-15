@@ -16,7 +16,12 @@ type AccountSummary = Awaited<
   ReturnType<AdminAccountsService['getAccounts']>
 >['summary'];
 
-const ACTIVE_JOB_STATUSES = ['MATCHED', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'] as const;
+const ACTIVE_JOB_STATUSES = [
+  'MATCHED',
+  'EN_ROUTE',
+  'ARRIVED',
+  'IN_PROGRESS',
+] as const;
 
 @Injectable()
 export class AdminDashboardService {
@@ -42,7 +47,10 @@ export class AdminDashboardService {
   }
 
   /** Đếm số phần tử theo khóa string rồi trả về danh sách top giảm dần. */
-  private buildTopInsights(values: Array<string | null | undefined>, limit = 10) {
+  private buildTopInsights(
+    values: Array<string | null | undefined>,
+    limit = 10,
+  ) {
     const counter = new Map<string, number>();
 
     values
@@ -80,14 +88,20 @@ export class AdminDashboardService {
   private getSeverity(session: DashboardSession) {
     if (session.isDangerous) return 'Nguy hiểm';
     if (session.status === 'BROADCASTING') return 'Cao';
-    if (ACTIVE_JOB_STATUSES.includes(session.status as (typeof ACTIVE_JOB_STATUSES)[number])) {
+    if (
+      ACTIVE_JOB_STATUSES.includes(
+        session.status as (typeof ACTIVE_JOB_STATUSES)[number],
+      )
+    ) {
       return 'Trung bình';
     }
     return 'Thấp';
   }
 
   /** Lấy amount của các quote đã được chấp nhận trong metadata message. */
-  private getAcceptedQuoteAmount(message: NonNullable<DashboardSession['messages']>[number]) {
+  private getAcceptedQuoteAmount(
+    message: NonNullable<DashboardSession['messages']>[number],
+  ) {
     const metadata = this.asMetadata(message.metadata);
     const quoteStatus = metadata.quoteStatus;
     const amount = Number(metadata.amount);
@@ -151,7 +165,8 @@ export class AdminDashboardService {
       .slice(0, 6)
       .map((session) => {
         const quoteAccepted = (session.messages ?? []).some(
-          (message) => this.asMetadata(message.metadata).quoteStatus === 'ACCEPTED',
+          (message) =>
+            this.asMetadata(message.metadata).quoteStatus === 'ACCEPTED',
         );
 
         if (quoteAccepted) {
@@ -222,7 +237,9 @@ export class AdminDashboardService {
   /** Đổi technician admin sang row dashboard để hiển thị nhóm thợ đang online. */
   private mapOnlineTechnician(item: DashboardTechnician) {
     const expertise =
-      item.currentJob?.deviceType?.trim() || item.address?.trim() || 'Điện gia dụng';
+      item.currentJob?.deviceType?.trim() ||
+      item.address?.trim() ||
+      'Điện gia dụng';
 
     return {
       id: item.id,
@@ -244,7 +261,9 @@ export class AdminDashboardService {
     sessions: DashboardSession[],
     technicians: DashboardTechnician[],
   ) {
-    const technicianMap = new Map(technicians.map((item) => [Number(item.id), item]));
+    const technicianMap = new Map(
+      technicians.map((item) => [Number(item.id), item]),
+    );
 
     return sessions
       .filter(
@@ -276,9 +295,12 @@ export class AdminDashboardService {
             session.user?.fullName?.trim() ||
             session.contactName?.trim() ||
             'Khách hàng',
-          description: session.aiSummary?.trim() || session.symptom?.trim() || undefined,
+          description:
+            session.aiSummary?.trim() || session.symptom?.trim() || undefined,
           assignedTechnician:
-            session.technician?.fullName?.trim() || technician?.fullName || undefined,
+            session.technician?.fullName?.trim() ||
+            technician?.fullName ||
+            undefined,
           technicianPhone: technician?.phoneNumber,
           address: session.address?.trim() || undefined,
         };
@@ -302,11 +324,14 @@ export class AdminDashboardService {
       ['COMPLETED', 'DONE'].includes(item.status),
     ).length;
     const inProgressJobs = sessions.filter((item) =>
-      ACTIVE_JOB_STATUSES.includes(item.status as (typeof ACTIVE_JOB_STATUSES)[number]),
+      ACTIVE_JOB_STATUSES.includes(
+        item.status as (typeof ACTIVE_JOB_STATUSES)[number],
+      ),
     ).length;
     const dangerousJobs = sessions.filter((item) => item.isDangerous).length;
     const alerts =
-      dangerousJobs + sessions.filter((item) => item.status === 'CANCELLED').length;
+      dangerousJobs +
+      sessions.filter((item) => item.status === 'CANCELLED').length;
 
     const health =
       dangerousJobs >= 3 ? 'critical' : alerts >= 2 ? 'warning' : 'stable';
@@ -393,12 +418,13 @@ export class AdminDashboardService {
 
   /** Tổng hợp dữ liệu dashboard từ các route admin hiện có thành resource riêng. */
   async getDashboardData() {
-    const [accountsResult, technicians, sessionDetails, aiLogs] = await Promise.all([
-      this.adminAccountsService.getAccounts({ page: '1', pageSize: '10' }),
-      this.adminTechniciansService.getTechnicians(),
-      this.getDetailedSessions(),
-      this.adminAiReasoningLogsService.getLogs({}),
-    ]);
+    const [accountsResult, technicians, sessionDetails, aiLogs] =
+      await Promise.all([
+        this.adminAccountsService.getAccounts({ page: '1', pageSize: '10' }),
+        this.adminTechniciansService.getTechnicians(),
+        this.getDetailedSessions(),
+        this.adminAiReasoningLogsService.getLogs({}),
+      ]);
 
     const overview = this.buildOverview(
       accountsResult.summary.total,

@@ -14,10 +14,27 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { CreateQuoteDto } from './dto/create-quote.dto';
-import { MessageType } from '@prisma/client';
+import { JobStatus, MessageType, UserRole } from '@prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ChatsGateway } from './chats.gateway';
 import { JobsService } from '../jobs/jobs.service';
+import { CreateChatSessionDto } from './dto/create-chat-session.dto';
+
+type DeviceSwitchAction = {
+  action: 'CREATE_NEW_SESSION' | 'CONTINUE_CURRENT_SESSION';
+  label: string;
+};
+
+export type DeviceSwitchResult = {
+  deviceSwitchDetected: true;
+  currentDevice: string | null;
+  detectedDevice: string;
+  originalContent: string;
+  message: string;
+  actions: DeviceSwitchAction[];
+};
+
+type ChatMessageResult = any;
 
 @Injectable()
 export class ChatsService {
@@ -27,26 +44,572 @@ export class ChatsService {
     @Inject(forwardRef(() => ChatsGateway))
     private readonly chatsGateway: ChatsGateway,
     private readonly jobsService: JobsService,
-  ) {}
+  ) { }
 
   private readonly logger = new Logger(ChatsService.name);
 
-  // 0. LẤY DANH SÁCH PHIÊN CHAT CỦA USER (Hộp thư)
+  private cleanText(value?: string | null): string | null {
+    if (typeof value !== 'string') return null;
+
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+
+  private normalizeDeviceName(deviceType?: string | null): string | null {
+    const value = this.cleanText(deviceType);
+    if (!value) return null;
+
+    const normalized = value
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+
+    const aliases: Record<string, string> = {
+      'lo vi song': 'lò vi sóng',
+      'lò vi sóng': 'lò vi sóng',
+      microwave: 'lò vi sóng',
+
+      'may giat': 'máy giặt',
+      'máy giặt': 'máy giặt',
+      'washing machine': 'máy giặt',
+
+      'tu lanh': 'tủ lạnh',
+      'tủ lạnh': 'tủ lạnh',
+      fridge: 'tủ lạnh',
+      refrigerator: 'tủ lạnh',
+
+      'dieu hoa': 'điều hòa',
+      'điều hòa': 'điều hòa',
+      'may lanh': 'điều hòa',
+      'máy lạnh': 'điều hòa',
+      'air conditioner': 'điều hòa',
+
+      tv: 'tivi',
+      tivi: 'tivi',
+
+      'bep tu': 'bếp từ',
+      'bếp từ': 'bếp từ',
+    };
+
+    return aliases[normalized] ?? value.toLowerCase();
+  }
+
+  private isDifferentDevice(
+    currentDevice?: string | null,
+    incomingDevice?: string | null,
+  ): boolean {
+    const current = this.normalizeDeviceName(currentDevice);
+    const incoming = this.normalizeDeviceName(incomingDevice);
+
+    if (!current || !incoming) {
+      return false;
+    }
+
+    return current !== incoming;
+  }
+
+  private deriveSessionTitle(session: {
+    deviceType?: string | null;
+    symptom?: string | null;
+  }): string {
+    if (session.deviceType && session.symptom) {
+      return `${session.deviceType} ${session.symptom}`;
+    }
+
+    if (session.deviceType) {
+      return `Tư vấn ${session.deviceType}`;
+    }
+
+    return 'Phiên tư vấn mới';
+  }
+
+  private buildDeviceSwitchResult(
+    currentDevice: string,
+    detectedDevice: string,
+    originalContent: string,
+  ): DeviceSwitchResult {
+    return {
+      deviceSwitchDetected: true,
+      currentDevice,
+      detectedDevice,
+      originalContent,
+      message: `Phiên này đang tư vấn cho ${currentDevice}. Vấn đề ${detectedDevice} nên tạo phiên mới để không lẫn thông tin chẩn đoán.`,
+      actions: [
+        {
+          action: 'CREATE_NEW_SESSION',
+          label: `Tạo phiên mới cho ${detectedDevice}`,
+        },
+        {
+          action: 'CONTINUE_CURRENT_SESSION',
+          label: `Tiếp tục với ${currentDevice}`,
+        },
+      ],
+    };
+  }
+
+  private formatLastMessage(
+    message?: {
+      id: number;
+      content: string;
+      type: MessageType;
+      createdAt: Date;
+      senderId: number | null;
+    } | null,
+  ) {
+    if (!message) {
+      return null;
+    }
+
+    return {
+      id: message.id,
+      content: message.content,
+      type: message.type,
+      createdAt: message.createdAt,
+      senderId: message.senderId ?? 0,
+    };
+  }
+
+  private async enrichSessionListItem(
+    session: any,
+    viewerId: number,
+  ): Promise<any> {
+    const lastMessage = Array.isArray(session.messages)
+      ? this.formatLastMessage(session.messages[0] ?? null)
+      : null;
+
+    const unreadCount = await this.prisma.message.count({
+      where: {
+        sessionId: session.id,
+        isDeleted: false,
+        isRead: false,
+        senderId: { not: viewerId },
+      },
+    });
+
+    return {
+      ...session,
+      title: this.deriveSessionTitle(session),
+      lastMessage,
+      unreadCount,
+    };
+  }
+
+  async assertCanAccessSession(
+    sessionId: number,
+    userId: number,
+    role?: string,
+  ): Promise<void> {
+    const session = await this.prisma.chatSession.findUnique({
+      where: { id: sessionId },
+      select: {
+        id: true,
+        userId: true,
+        technicianId: true,
+        status: true,
+        assignmentHistories: {
+          where: {
+            technicianId: userId,
+            action: 'MANUAL_CANCEL',
+          },
+          select: { id: true },
+          take: 1,
+        },
+      },
+    });
+
+    if (!session) {
+      throw new NotFoundException('Phiên chat không tồn tại.');
+    }
+
+    const normalizedRole = role?.toUpperCase();
+
+    if (normalizedRole === UserRole.ADMIN) {
+      return;
+    }
+
+    if (session.userId === userId || session.technicianId === userId) {
+      return;
+    }
+
+    if (
+      normalizedRole === UserRole.TECHNICIAN &&
+      session.status === JobStatus.BROADCASTING &&
+      session.assignmentHistories.length === 0
+    ) {
+      return;
+    }
+
+    throw new ForbiddenException('Bạn không có quyền truy cập phiên chat này.');
+  }
+
+  async createChatSession(userId: number, dto: CreateChatSessionDto) {
+    const deviceType = this.cleanText(dto.deviceType);
+    const symptom = this.cleanText(dto.symptom);
+    const firstMessage = this.cleanText(dto.firstMessage);
+
+    const session = await this.prisma.$transaction(async (tx) => {
+      const createdSession = await tx.chatSession.create({
+        data: {
+          userId,
+          technicianId: null,
+          status: JobStatus.AI_CONSULTING,
+          deviceType: deviceType ?? undefined,
+          symptom: symptom ?? undefined,
+        },
+      });
+
+      if (firstMessage) {
+        await tx.message.create({
+          data: {
+            sessionId: createdSession.id,
+            senderId: userId,
+            type: MessageType.TEXT,
+            content: firstMessage,
+            metadata: {
+              ...(dto.metadata ?? {}),
+              contextDevice: deviceType,
+              contextSymptom: symptom,
+            },
+          },
+        });
+      }
+
+      return createdSession;
+    });
+
+    return {
+      ...session,
+      title: this.deriveSessionTitle(session),
+    };
+  }
+
+  async getAccessibleUserSessions(userId: number, role?: string) {
+    const normalizedRole = role?.toUpperCase();
+
+    const sessions = await this.prisma.chatSession.findMany({
+      where:
+        normalizedRole === UserRole.ADMIN
+          ? {}
+          : normalizedRole === UserRole.TECHNICIAN
+            ? {
+              OR: [
+                { technicianId: userId },
+                {
+                  status: JobStatus.BROADCASTING,
+                  assignmentHistories: {
+                    none: {
+                      technicianId: userId,
+                      action: 'MANUAL_CANCEL',
+                    },
+                  },
+                },
+              ],
+            }
+            : { userId },
+      orderBy: { updatedAt: 'desc' },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            avatarUrl: true,
+            role: true,
+          },
+        },
+        technician: {
+          select: {
+            id: true,
+            fullName: true,
+            avatarUrl: true,
+            role: true,
+            phoneNumber: true,
+          },
+        },
+        review: true,
+        messages: {
+          where: { isDeleted: false },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          include: {
+            sender: {
+              select: {
+                id: true,
+                fullName: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    return Promise.all(
+      sessions.map((session) => this.enrichSessionListItem(session, userId)),
+    );
+  }
+
+  async getMessagesForUser(
+    sessionId: number,
+    userId: number,
+    role: string | undefined,
+    cursor?: number,
+    limit: number = 20,
+  ) {
+    await this.assertCanAccessSession(sessionId, userId, role);
+    return this.getMessages(sessionId, cursor, limit);
+  }
+
+  async detectDeviceSwitchForSession(
+    sessionId: number,
+    userId: number,
+    role: string | undefined,
+    payload: {
+      deviceType?: string | null;
+      content?: string | null;
+    },
+  ): Promise<DeviceSwitchResult | null> {
+    await this.assertCanAccessSession(sessionId, userId, role);
+
+    const session = await this.prisma.chatSession.findUnique({
+      where: { id: sessionId },
+      select: {
+        deviceType: true,
+      },
+    });
+
+    if (!session) {
+      throw new NotFoundException('Phiên chat không tồn tại.');
+    }
+
+    const incomingDevice = this.cleanText(payload.deviceType);
+
+    if (
+      !session.deviceType ||
+      !incomingDevice ||
+      !this.isDifferentDevice(session.deviceType, incomingDevice)
+    ) {
+      return null;
+    }
+
+    return this.buildDeviceSwitchResult(
+      session.deviceType,
+      incomingDevice,
+      this.cleanText(payload.content) ?? payload.content ?? '',
+    );
+  }
+
+  async processSessionMessage(
+    sessionId: number,
+    senderId: number,
+    dto: SendMessageDto,
+    senderRoleOrSocketId?: string,
+    senderSocketId?: string,
+  ): Promise<ChatMessageResult | DeviceSwitchResult> {
+    const normalizedSenderRole = senderRoleOrSocketId?.toUpperCase();
+
+    const senderRole =
+      normalizedSenderRole === UserRole.USER ||
+        normalizedSenderRole === UserRole.TECHNICIAN ||
+        normalizedSenderRole === UserRole.ADMIN
+        ? normalizedSenderRole
+        : undefined;
+
+    const resolvedSenderSocketId = senderRole
+      ? senderSocketId
+      : senderRoleOrSocketId;
+
+    await this.assertCanAccessSession(sessionId, senderId, senderRole);
+
+    const session = await this.prisma.chatSession.findUnique({
+      where: { id: sessionId },
+      select: {
+        id: true,
+        userId: true,
+        technicianId: true,
+        deviceType: true,
+        symptom: true,
+        status: true,
+      },
+    });
+
+    if (!session) {
+      throw new NotFoundException('Phiên chat không tồn tại.');
+    }
+
+    if (session.status === JobStatus.BROADCASTING) {
+      throw new BadRequestException(
+        'Đang phát sóng tìm thợ, vui lòng đợi thợ nhận đơn để tiếp tục nhắn tin.',
+      );
+    }
+
+    if (
+      session.status === JobStatus.COMPLETED ||
+      session.status === JobStatus.CANCELLED
+    ) {
+      throw new BadRequestException(
+        'Đơn hàng đã đóng, không thể gửi thêm tin nhắn.',
+      );
+    }
+
+    const incomingDevice = this.cleanText(dto.deviceType);
+    const incomingSymptom = this.cleanText(dto.symptom);
+    const content = this.cleanText(dto.content) ?? dto.content;
+
+    if (
+      session.deviceType &&
+      incomingDevice &&
+      this.isDifferentDevice(session.deviceType, incomingDevice)
+    ) {
+      return this.buildDeviceSwitchResult(
+        session.deviceType,
+        incomingDevice,
+        content,
+      );
+    }
+
+    let effectiveDevice = session.deviceType;
+    let effectiveSymptom = session.symptom;
+
+    if (
+      (!session.deviceType && incomingDevice) ||
+      (!session.symptom && incomingSymptom)
+    ) {
+      const updatedSession = await this.prisma.chatSession.update({
+        where: { id: sessionId },
+        data: {
+          ...(session.deviceType
+            ? {}
+            : { deviceType: incomingDevice ?? undefined }),
+          ...(session.symptom
+            ? {}
+            : { symptom: incomingSymptom ?? undefined }),
+        },
+        select: {
+          deviceType: true,
+          symptom: true,
+        },
+      });
+
+      effectiveDevice = updatedSession.deviceType;
+      effectiveSymptom = updatedSession.symptom;
+    }
+
+    const message = await this.prisma.message.create({
+      data: {
+        sessionId,
+        senderId,
+        type: dto.type,
+        content,
+        metadata: {
+          ...(dto.metadata ?? {}),
+          contextDevice: effectiveDevice ?? incomingDevice,
+          contextSymptom: effectiveSymptom ?? incomingSymptom,
+        },
+      },
+      include: {
+        sender: {
+          select: {
+            id: true,
+            fullName: true,
+            avatarUrl: true,
+            role: true,
+          },
+        },
+      },
+    });
+
+    const roomName = `room_${sessionId}`;
+
+    if (resolvedSenderSocketId) {
+      this.chatsGateway.server
+        .to(roomName)
+        .except(resolvedSenderSocketId)
+        .emit('new_message', message);
+    } else {
+      this.chatsGateway.server.to(roomName).emit('new_message', message);
+    }
+
+    this.triggerFCMNotification(sessionId, senderId, message).catch((err) =>
+      this.logger.error('Lỗi gửi FCM: ' + err.message),
+    );
+
+    return message;
+  }
+
+  async markMessageAsReadForUser(
+    messageId: number,
+    userId: number,
+    role?: string,
+  ) {
+    const message = await this.prisma.message.findUnique({
+      where: { id: messageId },
+      select: {
+        id: true,
+        sessionId: true,
+      },
+    });
+
+    if (!message) {
+      throw new NotFoundException(`Không tìm thấy tin nhắn với ID = ${messageId}`);
+    }
+
+    await this.assertCanAccessSession(message.sessionId, userId, role);
+
+    return this.markAsRead(messageId);
+  }
+
+  async markAllAsReadForUser(
+    sessionId: number,
+    userId: number,
+    role?: string,
+  ) {
+    await this.assertCanAccessSession(sessionId, userId, role);
+    return this.markAllAsRead(sessionId, userId);
+  }
+
+  async bookTechnicianFromSession(
+    sessionId: number,
+    userId: number,
+    role: string | undefined,
+    dto?: {
+      contactName?: string;
+      contactPhone?: string;
+      address?: string;
+      latitude?: number;
+      longitude?: number;
+    },
+  ) {
+    await this.assertCanAccessSession(sessionId, userId, role);
+    return this.bookTechnician(sessionId, userId, dto);
+  }
+
+  async deleteUserSessionSecure(
+    userId: number,
+    sessionId: number,
+    role?: string,
+  ) {
+    await this.assertCanAccessSession(sessionId, userId, role);
+    return this.deleteUserSession(userId, sessionId);
+  }
+
   async getUserSessions(userId: number) {
     try {
       return await this.prisma.chatSession.findMany({
         where: {
           AND: [
-            { OR: [{ userId: userId }, { technicianId: userId }] },
-            { technicianId: { not: null } },
+            {
+              OR: [{ userId }, { technicianId: userId }],
+            },
+            {
+              technicianId: { not: null },
+            },
             {
               OR: [
                 { status: { notIn: ['COMPLETED', 'DONE', 'CANCELLED'] } }, // Đang làm (không phải COMPLETED, DONE hay CANCELLED) thì hiện cho cả 2
                 {
                   AND: [
-                    { userId: userId }, // Chỉ Khách hàng mới thấy đơn COMPLETED
-                    { status: 'COMPLETED' },
-                    { review: { is: null } }, // Và chỉ khi chưa đánh giá
+                    { userId },
+                    { status: JobStatus.COMPLETED },
+                    { review: { is: null } },
                   ],
                 },
               ],
@@ -55,18 +618,35 @@ export class ChatsService {
         },
         orderBy: { updatedAt: 'desc' },
         include: {
-          user: { select: { id: true, fullName: true, avatarUrl: true, role: true } },
+          user: {
+            select:
+            {
+              id: true,
+              fullName: true,
+              avatarUrl: true,
+              role: true
+            }
+          },
           technician: { select: { id: true, fullName: true, avatarUrl: true, role: true, phoneNumber: true, averageRating: true, totalReviews: true } },
           review: true, // Thêm include review để check
           messages: {
             orderBy: { createdAt: 'desc' },
             take: 1,
-            include: { sender: { select: { id: true, fullName: true } } },
+            include: {
+              sender: {
+                select: {
+                  id: true,
+                  fullName: true,
+                },
+              },
+            },
           },
         },
       });
-    } catch (error:any) {
-      throw new InternalServerErrorException('Lỗi khi tải danh sách phiên chat: ' + error.message);
+    } catch (error: any) {
+      throw new InternalServerErrorException(
+        'Lỗi khi tải danh sách phiên chat: ' + error.message,
+      );
     }
   }
 
@@ -74,72 +654,168 @@ export class ChatsService {
     return this.prisma.chatSession.findUnique({
       where: { id: sessionId },
       include: {
-        user: { select: { id: true, fullName: true, avatarUrl: true, role: true } },
+        user:
+        {
+          select: {
+            id: true,
+            fullName: true,
+            avatarUrl: true,
+            role: true
+          }
+        },
         technician: { select: { id: true, fullName: true, avatarUrl: true, role: true, phoneNumber: true, averageRating: true, totalReviews: true } },
         review: true,
       },
     });
   }
 
-  // 1. LẤY DANH SÁCH TIN NHẮN (Cursor-based Pagination)
   async getMessages(sessionId: number, cursor?: number, limit: number = 20) {
     try {
       const messages = await this.prisma.message.findMany({
-        where: { sessionId, isDeleted: false },
+        where: {
+          sessionId,
+          isDeleted: false,
+        },
         take: limit,
         ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
         orderBy: { id: 'desc' },
         include: {
-          sender: { select: { id: true, fullName: true, avatarUrl: true, role: true } },
+          sender: {
+            select: {
+              id: true,
+              fullName: true,
+              avatarUrl: true,
+              role: true,
+            },
+          },
         },
       });
-      return messages.reverse();
-    } catch (error:any) {
-      throw new InternalServerErrorException('Lỗi khi tải tin nhắn: ' + error.message);
+      if (messages.length > 0) {
+        return messages.reverse();
+      }
+
+      if (cursor) {
+        return [];
+      }
+
+      return this.buildMessagesFromAiLogs(sessionId, limit);
+    } catch (error: any) {
+      throw new InternalServerErrorException(
+        'Lỗi khi tải tin nhắn: ' + error.message,
+      );
     }
   }
 
-  async sendMessage(sessionId: number, senderId: number, dto: SendMessageDto, senderSocketId?: string) {
+  private async buildMessagesFromAiLogs(sessionId: number, limit: number) {
+    const logs = await this.prisma.aiReasoningLog.findMany({
+      where: { sessionId },
+      orderBy: { createdAt: 'asc' },
+      take: limit,
+    });
+
+    return logs.flatMap((log) => {
+      const items: Array<Record<string, unknown>> = [];
+
+      if (log.userMsg?.trim()) {
+        items.push({
+          id: -(log.id * 2),
+          sessionId,
+          senderId: log.userId,
+          sender: null,
+          type: MessageType.TEXT,
+          content: log.userMsg,
+          metadata: null,
+          isRead: true,
+          isDeleted: false,
+          createdAt: log.createdAt,
+        });
+      }
+
+      if (log.aiResponse?.trim()) {
+        items.push({
+          id: -(log.id * 2 + 1),
+          sessionId,
+          senderId: null,
+          sender: null,
+          type: MessageType.TEXT,
+          content: log.aiResponse,
+          metadata: null,
+          isRead: true,
+          isDeleted: false,
+          createdAt: log.createdAt,
+        });
+      }
+
+      return items;
+    });
+  }
+
+  async sendMessage(
+    sessionId: number,
+    senderId: number,
+    dto: SendMessageDto,
+    senderSocketId?: string,
+  ) {
     try {
       const currentDevice = dto.deviceType || null;
 
-      // 1. TRANSACTION ĐỂ XỬ LÝ RACE CONDITION
       const message = await this.prisma.$transaction(async (tx) => {
         const session = await tx.chatSession.findUnique({
           where: { id: sessionId },
-          select: { status: true, deviceType: true }
+          select: {
+            status: true,
+            deviceType: true,
+          },
         });
 
         if (!session) {
           throw new NotFoundException('Không tìm thấy phiên chat này.');
         }
 
-        if (session.status === 'BROADCASTING') {
-          throw new BadRequestException('Đang phát sóng tìm thợ, vui lòng đợi thợ nhận đơn để tiếp tục nhắn tin.');
+        if (session.status === JobStatus.BROADCASTING) {
+          throw new BadRequestException(
+            'Đang phát sóng tìm thợ, vui lòng đợi thợ nhận đơn để tiếp tục nhắn tin.',
+          );
         }
 
-        if (session.status === 'COMPLETED' || session.status === 'CANCELLED' || session.status === 'DONE') {
+        if (session.status === 'COMPLETED' ||
+          session.status === 'CANCELLED' ||
+          session.status === 'DONE') {
           throw new BadRequestException('Đơn hàng đã đóng, không thể gửi thêm tin nhắn.');
         }
 
-        return await tx.message.create({
+        return tx.message.create({
           data: {
             sessionId,
             senderId,
             type: dto.type,
             content: dto.content,
-            metadata: dto.metadata 
-              ? { ...dto.metadata, contextDevice: currentDevice || session.deviceType } 
-              : (currentDevice || session.deviceType ? { contextDevice: currentDevice || session.deviceType } : undefined),
+            metadata: dto.metadata
+              ? {
+                ...dto.metadata,
+                contextDevice: currentDevice || session.deviceType,
+              }
+              : currentDevice || session.deviceType
+                ? {
+                  contextDevice: currentDevice || session.deviceType,
+                }
+                : undefined,
           },
           include: {
-            sender: { select: { id: true, fullName: true, avatarUrl: true, role: true } },
+            sender: {
+              select: {
+                id: true,
+                fullName: true,
+                avatarUrl: true,
+                role: true,
+              },
+            },
           },
         });
       });
 
-      // 2. BROADCAST VÀ GỬI FCM
       const roomName = `room_${sessionId}`;
+
       if (senderSocketId) {
         this.chatsGateway.server
           .to(roomName)
@@ -149,38 +825,53 @@ export class ChatsService {
         this.chatsGateway.server.to(roomName).emit('new_message', message);
       }
 
-      this.triggerFCMNotification(sessionId, senderId, message).catch(err => 
-        this.logger.error('❌ Lỗi gửi FCM:', err.message)
+      this.triggerFCMNotification(sessionId, senderId, message).catch((err) =>
+        this.logger.error('❌ Lỗi gửi FCM:', err.message),
       );
 
       return message;
-    } catch (error:any) {
-      if (error instanceof HttpException) throw error;
-      throw new InternalServerErrorException('Lỗi khi gửi tin nhắn: ' + error.message);
+    } catch (error: any) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
+
+      throw new InternalServerErrorException(
+        'Lỗi khi gửi tin nhắn: ' + error.message,
+      );
     }
   }
 
-  // 3. ĐÁNH DẤU TIN NHẮN ĐÃ XEM
   async markAsRead(messageId: number) {
     try {
-      const message = await this.prisma.message.findUnique({ where: { id: messageId } });
-      if (!message) throw new NotFoundException(`Không tìm thấy tin nhắn với ID = ${messageId}`);
+      const message = await this.prisma.message.findUnique({
+        where: { id: messageId },
+      });
+
+      if (!message) {
+        throw new NotFoundException(
+          `Không tìm thấy tin nhắn với ID = ${messageId}`,
+        );
+      }
+
       if (message.isRead) return message;
 
       return await this.prisma.message.update({
         where: { id: messageId },
         data: { isRead: true },
       });
-    } catch (error:any) {
+    } catch (error: any) {
       if (error instanceof NotFoundException) throw error;
-      throw new InternalServerErrorException('Lỗi khi đánh dấu đã xem: ' + error.message);
+
+      throw new InternalServerErrorException(
+        'Lỗi khi đánh dấu đã xem: ' + error.message,
+      );
     }
   }
 
   async markAllAsRead(sessionId: number, userId: number) {
     return this.prisma.message.updateMany({
       where: {
-        sessionId: sessionId,
+        sessionId,
         senderId: { not: userId },
         isRead: false,
       },
@@ -188,15 +879,18 @@ export class ChatsService {
     });
   }
 
-  // 4. HỆ THỐNG BÁO GIÁ (QUOTATION)
-  async createQuote(sessionId: number, technicianId: number, dto: CreateQuoteDto) {
+  async createQuote(
+    sessionId: number,
+    technicianId: number,
+    dto: CreateQuoteDto,
+  ) {
     const quote = await this.prisma.quote.create({
-      data: { 
-        sessionId, 
-        technicianId, 
-        title: dto.title, 
+      data: {
+        sessionId,
+        technicianId,
+        title: dto.title,
         amount: dto.amount,
-        expectedTime: dto.expectedTime, // 👈 BẮT BUỘC THÊM DÒNG NÀY ĐỂ LƯU DB
+        expectedTime: dto.expectedTime,
       },
     });
 
@@ -204,24 +898,41 @@ export class ChatsService {
       data: {
         sessionId,
         senderId: technicianId,
-        type: 'QUOTE_CARD',
+        type: MessageType.QUOTE_CARD,
         content: `Báo giá mới cho: ${dto.title}`,
-        metadata: { 
-          quoteId: quote.id, 
-          amount: dto.amount, 
-          title: dto.title, 
-          expectedTime: dto.expectedTime, // 👈 Thêm vào metadata để Flutter dễ đọc nếu cần
-          quoteStatus: 'PENDING' 
+        metadata: {
+          quoteId: quote.id,
+          amount: dto.amount,
+          title: dto.title,
+          expectedTime: dto.expectedTime,
+          quoteStatus: 'PENDING',
         },
       },
-      include: { sender: { select: { id: true, fullName: true, avatarUrl: true, role: true } } },
+      include: {
+        sender: {
+          select: {
+            id: true,
+            fullName: true,
+            avatarUrl: true,
+            role: true,
+          },
+        },
+      },
     });
 
     this.chatsGateway.emitToRoom(sessionId, 'new_message', quoteMessage);
-    return { quote, message: quoteMessage };
+
+    return {
+      quote,
+      message: quoteMessage,
+    };
   }
 
-  async updateQuoteStatus(messageId: number, userId: number, status: 'ACCEPTED' | 'REJECTED') {
+  async updateQuoteStatus(
+    messageId: number,
+    userId: number,
+    status: 'ACCEPTED' | 'REJECTED',
+  ) {
     const message = await this.prisma.message.findUnique({
       where: { id: messageId },
       include: { session: true },
@@ -241,61 +952,92 @@ export class ChatsService {
     const quote = await this.prisma.quote.update({
       where: { id: quoteId },
       data: {
-        status: status,
-        ...(status === 'ACCEPTED' ? { acceptedAt: new Date() } : { rejectedAt: new Date() }),
+        status,
+        ...(status === 'ACCEPTED'
+          ? { acceptedAt: new Date() }
+          : { rejectedAt: new Date() }),
       },
     });
 
     if (status === 'ACCEPTED') {
       await this.prisma.chatSession.update({
         where: { id: message.sessionId },
-        data: { status: 'IN_PROGRESS' },
+        data: { status: JobStatus.IN_PROGRESS },
       });
+
       this.chatsGateway.emitToRoom(message.sessionId, 'job_status_changed', {
         sessionId: message.sessionId,
-        status: 'IN_PROGRESS',
+        status: JobStatus.IN_PROGRESS,
       });
     }
 
     const updatedMessage = await this.prisma.message.update({
       where: { id: messageId },
-      data: { metadata: { ...metadata, quoteStatus: status } },
-      include: { sender: { select: { id: true, fullName: true, avatarUrl: true, role: true } } },
+      data: {
+        metadata: {
+          ...metadata,
+          quoteStatus: status,
+        },
+      },
+      include: {
+        sender: {
+          select: {
+            id: true,
+            fullName: true,
+            avatarUrl: true,
+            role: true,
+          },
+        },
+      },
     });
 
     this.chatsGateway.emitToRoom(message.sessionId, 'quote_updated', {
-      messageId: messageId,
-      status: status,
+      messageId,
+      status,
       message: updatedMessage,
     });
 
-    // Bắn FCM cho Thợ
     const sessionForTechFCM = await this.prisma.chatSession.findUnique({
       where: { id: message.sessionId },
       select: { technicianId: true },
     });
+
     if (sessionForTechFCM?.technicianId) {
-      const tech = await this.prisma.user.findUnique({ where: { id: sessionForTechFCM.technicianId }, select: { fcmToken: true } });
+      const tech = await this.prisma.user.findUnique({
+        where: { id: sessionForTechFCM.technicianId },
+        select: { fcmToken: true },
+      });
+
       if (tech?.fcmToken) {
-        this.notificationsService.sendNotification({
-          token: tech.fcmToken,
-          title: status === 'ACCEPTED' ? '✅ Khách đã chốt giá!' : '❌ Khách từ chối báo giá',
-          body: status === 'ACCEPTED' ? 'Tuyệt vời, khách đã đồng ý! Bạn có thể bắt đầu làm.' : 'Khách hàng không đồng ý với mức giá này.',
-          channelId: 'job_alerts',
-          data: {
-            type: 'QUOTE_UPDATED',
-            sessionId: message.sessionId.toString(),
-            quoteStatus: status,
-            click_action: 'FLUTTER_NOTIFICATION_CLICK',
-          },
-        }).catch(err => this.logger.error(`FCM Lỗi Quote: ${err.message}`));
+        this.notificationsService
+          .sendNotification({
+            token: tech.fcmToken,
+            title:
+              status === 'ACCEPTED'
+                ? '✅ Khách đã chốt giá!'
+                : '❌ Khách từ chối báo giá',
+            body:
+              status === 'ACCEPTED'
+                ? 'Tuyệt vời, khách đã đồng ý! Bạn có thể bắt đầu làm.'
+                : 'Khách hàng không đồng ý với mức giá này.',
+            channelId: 'job_alerts',
+            data: {
+              type: 'QUOTE_UPDATED',
+              sessionId: message.sessionId.toString(),
+              quoteStatus: status,
+              click_action: 'FLUTTER_NOTIFICATION_CLICK',
+            },
+          })
+          .catch((err) => this.logger.error(`FCM Lỗi Quote: ${err.message}`));
       }
     }
 
-    return { quote, message: updatedMessage };
+    return {
+      quote,
+      message: updatedMessage,
+    };
   }
 
-  // 5. CHỐT ĐƠN ĐẶT THỢ (Transition to BROADCASTING)
   async bookTechnician(
     sessionId: number,
     userId: number,
@@ -307,23 +1049,30 @@ export class ChatsService {
       longitude?: number;
     },
   ) {
-    const session = await this.prisma.chatSession.findUnique({ 
+    const session = await this.prisma.chatSession.findUnique({
       where: { id: sessionId },
-      include: { user: true }
+      include: { user: true },
     });
-    if (!session) throw new NotFoundException(`Không tìm thấy phiên chat!`);
-    if (session.userId !== userId) throw new BadRequestException('Bạn không có quyền chốt đơn này.');
+
+    if (!session) {
+      throw new NotFoundException('Không tìm thấy phiên chat!');
+    }
+
+    if (session.userId !== userId) {
+      throw new BadRequestException('Bạn không có quyền chốt đơn này.');
+    }
 
     const updated = await this.prisma.chatSession.update({
       where: { id: sessionId },
-      data: { 
-        status: 'BROADCASTING', 
+      data: {
+        status: JobStatus.BROADCASTING,
         updatedAt: new Date(),
         contactName: dto?.contactName || session.contactName,
         contactPhone: dto?.contactPhone || session.contactPhone,
         address: dto?.address || session.address,
         latitude: dto?.latitude !== undefined ? dto.latitude : session.latitude,
-        longitude: dto?.longitude !== undefined ? dto.longitude : session.longitude,
+        longitude:
+          dto?.longitude !== undefined ? dto.longitude : session.longitude,
       },
     });
 
@@ -339,179 +1088,281 @@ export class ChatsService {
       contactPhone: updated.contactPhone,
       user: {
         id: session.userId,
-        fullName: (session as any).user?.fullName || 'Khách hàng',
-        avatarUrl: (session as any).user?.avatarUrl,
+        fullName: session.user?.fullName || 'Khách hàng',
+        avatarUrl: session.user?.avatarUrl,
       },
     });
-    
-    // KÍCH HOẠT HÀNG ĐỢI PHÂN BỔ ĐƠN HÀNG (Attempt 1)
+
     await this.jobsService.addJobDispatch(updated.id, 1);
 
     return updated;
   }
 
-  // 6. API CHO THỢ (JOB BOARD & ACCEPT)
   async getBroadcastJobs(technicianId: number) {
     return this.prisma.chatSession.findMany({
       where: {
-        status: 'BROADCASTING',
+        status: JobStatus.BROADCASTING,
         assignmentHistories: {
           none: {
-            technicianId: technicianId,
+            technicianId,
             action: 'MANUAL_CANCEL',
           },
         },
       },
-      select: { 
-        id: true, 
-        deviceType: true, 
-        symptom: true, 
-        aiSummary: true, 
-        createdAt: true, 
+      select: {
+        id: true,
+        deviceType: true,
+        symptom: true,
+        aiSummary: true,
+        createdAt: true,
         version: true,
         address: true,
         contactName: true,
         contactPhone: true,
-        user: { select: { id: true, fullName: true, avatarUrl: true } }
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            avatarUrl: true,
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
   }
 
-  async acceptJob(sessionId: number, technicianId: number, currentVersion: number) {
-    return await this.prisma.$transaction(async (tx) => {
-      // 1. Tìm và Khóa dòng dữ liệu (Pessimistic Locking)
-      const jobs = await tx.$queryRaw<any[]>`SELECT * FROM "chat_sessions" WHERE id = ${sessionId} FOR UPDATE`;
-      
+  async acceptJob(
+    sessionId: number,
+    technicianId: number,
+    currentVersion: number,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const jobs = await tx.$queryRaw<
+        any[]
+      >`SELECT * FROM "chat_sessions" WHERE id = ${sessionId} FOR UPDATE`;
+
       if (!jobs || jobs.length === 0) {
-        throw new HttpException('Không tìm thấy đơn hàng!', HttpStatus.NOT_FOUND);
+        throw new HttpException(
+          'Không tìm thấy đơn hàng!',
+          HttpStatus.NOT_FOUND,
+        );
       }
-      
+
       const job = jobs[0];
 
-      // 2. Kiểm tra trạng thái (tương đương WAITING trong yêu cầu)
-      if (job.status !== 'BROADCASTING') {
+      if (job.status !== JobStatus.BROADCASTING) {
         throw new BadRequestException('Đơn hàng đã có người nhận');
       }
 
-      // 3. Cập nhật đơn hàng (tương đương ACCEPTED)
       await tx.chatSession.update({
         where: { id: sessionId },
-        data: { status: 'MATCHED', technicianId: technicianId, version: { increment: 1 } },
+        data: {
+          status: JobStatus.MATCHED,
+          technicianId,
+          version: { increment: 1 },
+        },
       });
 
-      // 4. Lưu lịch sử
       await tx.sessionAssignmentHistory.create({
-        data: { chatSessionId: sessionId, technicianId: technicianId, action: 'ASSIGNED' },
+        data: {
+          chatSessionId: sessionId,
+          technicianId,
+          action: 'ASSIGNED',
+        },
       });
 
-      // 5. Bắn socket (bên ngoài hoặc cuối transaction)
       this.chatsGateway.emitToRoom(sessionId, 'job_accepted', {
         sessionId,
         technicianId,
-        status: 'MATCHED',
+        status: JobStatus.MATCHED,
       });
 
-      // 6. Gửi Push Notification cho Khách Hàng
-      const customer = await tx.user.findUnique({ where: { id: job.userId }, select: { fcmToken: true } });
-      const tech = await tx.user.findUnique({ where: { id: technicianId }, select: { fullName: true } });
+      const customer = await tx.user.findUnique({
+        where: { id: job.userId },
+        select: { fcmToken: true },
+      });
+
+      const tech = await tx.user.findUnique({
+        where: { id: technicianId },
+        select: { fullName: true },
+      });
 
       if (customer?.fcmToken) {
-        this.notificationsService.sendNotification({
-          token: customer.fcmToken,
-          title: 'Thợ đã nhận đơn! 🎉',
-          body: `Thợ ${tech?.fullName || 'sửa chữa'} đã nhận đơn của bạn. Mở app để trao đổi nhé!`,
-          channelId: 'job_alerts',
-          data: {
-            type: 'JOB_ACCEPTED',
-            sessionId: sessionId.toString(),
-            technicianId: technicianId.toString(),
-            click_action: 'FLUTTER_NOTIFICATION_CLICK',
-          },
-        }).catch(err => this.logger.error(`Lỗi gửi FCM Khách Hàng (JOB_ACCEPTED): ${err.message}`));
+        this.notificationsService
+          .sendNotification({
+            token: customer.fcmToken,
+            title: 'Thợ đã nhận đơn! 🎉',
+            body: `Thợ ${tech?.fullName || 'sửa chữa'} đã nhận đơn của bạn. Mở app để trao đổi nhé!`,
+            channelId: 'job_alerts',
+            data: {
+              type: 'JOB_ACCEPTED',
+              sessionId: sessionId.toString(),
+              technicianId: technicianId.toString(),
+              click_action: 'FLUTTER_NOTIFICATION_CLICK',
+            },
+          })
+          .catch((err) =>
+            this.logger.error(
+              `Lỗi gửi FCM Khách Hàng (JOB_ACCEPTED): ${err.message}`,
+            ),
+          );
       }
 
-      return { success: true, message: 'Nhận đơn thành công!' };
+      return {
+        success: true,
+        message: 'Nhận đơn thành công!',
+      };
     });
   }
 
-
-
-  // Private Helper cho FCM
-  private async triggerFCMNotification(sessionId: number, senderId: number, message: any) {
+  private async triggerFCMNotification(
+    sessionId: number,
+    senderId: number,
+    message: any,
+  ) {
     const session = await this.prisma.chatSession.findUnique({
       where: { id: sessionId },
-      select: { userId: true, technicianId: true },
+      select: {
+        userId: true,
+        technicianId: true,
+      },
     });
+
     if (!session) return;
 
-    const recipientId = senderId === session.userId ? session.technicianId : session.userId;
+    const recipientId =
+      senderId === session.userId ? session.technicianId : session.userId;
+
     if (!recipientId) return;
 
     const recipient = await this.prisma.user.findUnique({
       where: { id: recipientId },
-      select: { fcmToken: true, fullName: true },
+      select: {
+        fcmToken: true,
+        fullName: true,
+      },
     });
-    if (!recipient || !recipient.fcmToken) return;
+
+    if (!recipient?.fcmToken) return;
 
     const title = message.sender?.fullName || 'Tin nhắn mới';
+
     let body = message.content;
+
     if (message.type === MessageType.IMAGE) body = '📷 Đã gửi một ảnh';
     if (message.type === MessageType.VIDEO) body = '🎥 Đã gửi một video';
     if (message.type === MessageType.QUOTE_CARD) body = '📄 Đã gửi báo giá mới';
 
     try {
-      this.logger.log(`🔔 Đang gửi Push Notification tới User #${recipientId} (${recipient.fullName})`);
+      this.logger.log(
+        `🔔 Đang gửi Push Notification tới User #${recipientId} (${recipient.fullName})`,
+      );
+
       await this.notificationsService.sendNotification({
         token: recipient.fcmToken,
-        title: title,
-        body: body,
-        channelId: 'chat_messages_v2', // Kênh chat của Flutter
+        title,
+        body,
+        channelId: 'chat_messages_v2',
         data: {
           type: 'chat',
           sessionId: sessionId.toString(),
         },
       });
-    } catch (err:any) {
-      this.logger.error(`❌ Lỗi gửi FCM tới User #${recipientId}: ${err.message}`);
+    } catch (err: any) {
+      this.logger.error(
+        `❌ Lỗi gửi FCM tới User #${recipientId}: ${err.message}`,
+      );
     }
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // NHIỆM VỤ 1: CRON JOB - TỰ ĐỘNG HỦY ĐƠN SAU 30 PHÚT
-  // ─────────────────────────────────────────────────────────────────
-  private readonly BROADCAST_EXPIRE_MINUTES = 120; // Đổi thành 5 để demo
+  private readonly BROADCAST_EXPIRE_MINUTES = 120;
+  private readonly EMPTY_AI_SESSION_EXPIRE_HOURS = 3;
 
-  @Cron('0 */5 * * * *') // EVERY 5 MINUTES
+  @Cron('0 */30 * * * *')
+  async handleDeleteIdleEmptyAiSessions() {
+    const expireTime = new Date(
+      Date.now() - this.EMPTY_AI_SESSION_EXPIRE_HOURS * 60 * 60 * 1000,
+    );
+
+    const staleSessions = await this.prisma.chatSession.findMany({
+      where: {
+        status: JobStatus.AI_CONSULTING,
+        technicianId: null,
+        updatedAt: { lt: expireTime },
+        messages: { none: {} },
+        quotes: { none: {} },
+        assignmentHistories: { none: {} },
+        review: { is: null },
+      },
+      select: { id: true },
+    });
+
+    if (staleSessions.length === 0) return;
+
+    const sessionIds = staleSessions.map((session) => session.id);
+
+    const activeLogSessionIds = new Set(
+      (
+        await this.prisma.aiReasoningLog.findMany({
+          where: { sessionId: { in: sessionIds } },
+          select: { sessionId: true },
+        })
+      )
+        .map((log) => log.sessionId)
+        .filter((sessionId): sessionId is number => sessionId != null),
+    );
+
+    const deletableSessionIds = sessionIds.filter(
+      (sessionId) => !activeLogSessionIds.has(sessionId),
+    );
+
+    if (deletableSessionIds.length === 0) return;
+
+    await this.prisma.chatSession.deleteMany({
+      where: { id: { in: deletableSessionIds } },
+    });
+
+    this.logger.log(
+      `[Cron] Đã xóa ${deletableSessionIds.length} session trống quá ${this.EMPTY_AI_SESSION_EXPIRE_HOURS} giờ không có tương tác.`,
+    );
+  }
+
+  @Cron('0 */5 * * * *')
   async handleExpireUnacceptedJobs() {
-    const expireTime = new Date(Date.now() - this.BROADCAST_EXPIRE_MINUTES * 60 * 1000);
+    const expireTime = new Date(
+      Date.now() - this.BROADCAST_EXPIRE_MINUTES * 60 * 1000,
+    );
 
     const expiredSessions = await this.prisma.chatSession.findMany({
       where: {
-        status: 'BROADCASTING',
+        status: JobStatus.BROADCASTING,
         createdAt: { lt: expireTime },
       },
     });
 
     if (expiredSessions.length === 0) return;
 
-    this.logger.log(`⏰ [CronJob] Tìm thấy ${expiredSessions.length} đơn quá hạn ${this.BROADCAST_EXPIRE_MINUTES} phút không có thợ nhận, đang tự động hủy...`);
+    this.logger.log(
+      `⏰ [CronJob] Tìm thấy ${expiredSessions.length} đơn quá hạn ${this.BROADCAST_EXPIRE_MINUTES} phút không có thợ nhận, đang tự động hủy...`,
+    );
 
     for (const session of expiredSessions) {
       await this.prisma.chatSession.update({
         where: { id: session.id },
         data: {
-          status: 'CANCELLED',
+          status: JobStatus.CANCELLED,
         },
       });
 
       this.chatsGateway.emitToRoom(session.id, 'job_status_changed', {
         sessionId: session.id,
-        status: 'CANCELLED',
+        status: JobStatus.CANCELLED,
         message: '🔴 Đơn hàng đã hết hạn do không có thợ nhận.',
       });
 
-      this.logger.log(`✅ [CronJob] Đã tự động hủy đơn #${session.id} do quá hạn`);
+      this.logger.log(
+        `✅ [CronJob] Đã tự động hủy đơn #${session.id} do quá hạn`,
+      );
     }
   }
 
@@ -521,38 +1372,44 @@ export class ChatsService {
 
     const stalledSessions = await this.prisma.chatSession.findMany({
       where: {
-        status: 'MATCHED',
+        status: JobStatus.MATCHED,
         updatedAt: { lt: thirtyMinutesAgo },
       },
       include: {
-        user: { select: { id: true, fullName: true, avatarUrl: true } },
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            avatarUrl: true,
+          },
+        },
       },
     });
 
     if (stalledSessions.length === 0) return;
 
-    this.logger.log(`⏰ [CronJob] Tìm thấy ${stalledSessions.length} đơn quá hạn 30 phút, đang tự động hủy...`);
+    this.logger.log(
+      `⏰ [CronJob] Tìm thấy ${stalledSessions.length} đơn quá hạn 30 phút, đang tự động hủy...`,
+    );
 
     for (const session of stalledSessions) {
       await this.prisma.chatSession.update({
         where: { id: session.id },
         data: {
-          status: 'BROADCASTING',
+          status: JobStatus.BROADCASTING,
           technicianId: null,
           version: { increment: 1 },
         },
       });
 
-      // Ghi log lịch sử
       await this.prisma.sessionAssignmentHistory.create({
         data: {
           chatSessionId: session.id,
-          technicianId: session.technicianId!,
+          technicianId: session.technicianId,
           action: 'SYSTEM_AUTO_CANCEL',
         },
       });
 
-      // Phát đơn lại cho tất cả thợ
       this.chatsGateway.emitGlobal('new_broadcast_job', {
         sessionId: session.id,
         deviceType: session.deviceType,
@@ -562,90 +1419,102 @@ export class ChatsService {
         version: session.version + 1,
         user: {
           id: session.userId,
-          fullName: (session as any).user?.fullName || 'Khách hàng',
-          avatarUrl: (session as any).user?.avatarUrl,
+          fullName: session.user?.fullName || 'Khách hàng',
+          avatarUrl: session.user?.avatarUrl,
         },
       });
 
-      // Thông báo cho phòng chat biết đơn đã bị hủy
       this.chatsGateway.emitToRoom(session.id, 'job_status_changed', {
         sessionId: session.id,
-        status: 'BROADCASTING',
+        status: JobStatus.BROADCASTING,
         reason: 'AUTO_CANCEL',
-        message: 'Thợ không phản hồi trong 30 phút. Đơn đang được tìm thợ mới...',
+        message:
+          'Thợ không phản hồi trong 30 phút. Đơn đang được tìm thợ mới...',
       });
 
-      this.logger.log(`✅ [CronJob] Đã tự động hủy và phát lại đơn #${session.id}`);
+      this.logger.log(
+        `✅ [CronJob] Đã tự động hủy và phát lại đơn #${session.id}`,
+      );
     }
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // NHIỆM VỤ 3: GỬI TIN NHẮN TRONG PHIÊN CHAT
-  // ─────────────────────────────────────────────────────────────────
-
-  // ─────────────────────────────────────────────────────────────────
-  // NHIỆM VỤ 3: THỢ XÁC NHẬN HOÀN THÀNH ĐƠN
-  // ─────────────────────────────────────────────────────────────────
   async completeJob(sessionId: number, technicianId: number) {
     const session = await this.prisma.chatSession.findUnique({
       where: { id: sessionId },
     });
 
-    if (!session) throw new NotFoundException('Không tìm thấy đơn hàng!');
+    if (!session) {
+      throw new NotFoundException('Không tìm thấy đơn hàng!');
+    }
+
     if (session.technicianId !== technicianId) {
       throw new ForbiddenException('Bạn không có quyền hoàn thành đơn này!');
     }
-    if (session.status !== 'IN_PROGRESS') {
+
+    if (session.status !== JobStatus.IN_PROGRESS) {
       throw new BadRequestException(
-        `Chỉ có thể hoàn thành đơn ở trạng thái IN_PROGRESS (Sau khi khách đã duyệt báo giá). Trạng thái hiện tại: ${session.status}`,
+        `Chỉ có thể hoàn thành đơn ở trạng thái IN_PROGRESS. Trạng thái hiện tại: ${session.status}`,
       );
     }
 
     const updatedSession = await this.prisma.chatSession.update({
       where: { id: sessionId },
-      data: { status: 'COMPLETED' },
-      include: { user: { select: { fcmToken: true } } }
+      data: {
+        status: JobStatus.COMPLETED,
+      },
+      include: {
+        user: {
+          select: {
+            fcmToken: true,
+          },
+        },
+      },
     });
 
-    // Phát sự kiện vào phòng chat để khóa giao diện nhắn tin
     this.chatsGateway.emitToRoom(sessionId, 'job_completed', {
       sessionId,
-      status: 'COMPLETED',
+      status: JobStatus.COMPLETED,
       message: '🎉 Đơn hàng đã hoàn thành! Cảm ơn bạn đã sử dụng SmartElec.',
     });
 
     if (updatedSession.user?.fcmToken) {
-      this.notificationsService.sendNotification({
-        token: updatedSession.user.fcmToken,
-        title: 'Hoàn thành sửa chữa! 🎉',
-        body: 'Đơn hàng đã xong, mời bạn đánh giá chất lượng dịch vụ.',
-        channelId: 'job_alerts',
-        data: {
-          type: 'JOB_STATUS_UPDATED',
-          status: 'COMPLETED',
-          sessionId: sessionId.toString(),
-          click_action: 'FLUTTER_NOTIFICATION_CLICK',
-        },
-      }).catch(err => this.logger.error(`FCM Lỗi: ${err.message}`));
+      this.notificationsService
+        .sendNotification({
+          token: updatedSession.user.fcmToken,
+          title: 'Hoàn thành sửa chữa! 🎉',
+          body: 'Đơn hàng đã xong, mời bạn đánh giá chất lượng dịch vụ.',
+          channelId: 'job_alerts',
+          data: {
+            type: 'JOB_STATUS_UPDATED',
+            status: JobStatus.COMPLETED,
+            sessionId: sessionId.toString(),
+            click_action: 'FLUTTER_NOTIFICATION_CLICK',
+          },
+        })
+        .catch((err) => this.logger.error(`FCM Lỗi: ${err.message}`));
     }
 
-    return { success: true, message: 'Xác nhận hoàn thành đơn thành công!' };
+    return {
+      success: true,
+      message: 'Xác nhận hoàn thành đơn thành công!',
+    };
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // NHIỆM VỤ 4: KHÁCH HÀNG GỬI ĐÁNH GIÁ SAU KHI HOÀN THÀNH
-  // ─────────────────────────────────────────────────────────────────
   async submitReview(
     sessionId: number,
     userId: number,
-    dto: { rating: number; comment?: string; tags?: string[] },
+    dto: {
+      rating: number;
+      comment?: string;
+      tags?: string[];
+    },
   ) {
-    // [GUARD 1] Kiểm tra rating hợp lệ
     if (dto.rating < 1 || dto.rating > 5 || !Number.isInteger(dto.rating)) {
-      throw new BadRequestException('Điểm đánh giá phải là số nguyên từ 1 đến 5.');
+      throw new BadRequestException(
+        'Điểm đánh giá phải là số nguyên từ 1 đến 5.',
+      );
     }
 
-    // [GUARD 2] Kiểm tra session tồn tại và đúng chủ
     const session = await this.prisma.chatSession.findUnique({
       where: { id: sessionId },
       include: { review: true },
@@ -654,28 +1523,30 @@ export class ChatsService {
     if (!session) {
       throw new NotFoundException('Không tìm thấy đơn hàng này.');
     }
+
     if (session.userId !== userId) {
       throw new ForbiddenException('Bạn không có quyền đánh giá đơn hàng này.');
     }
-    if (session.status !== 'COMPLETED') {
+
+    if (session.status !== JobStatus.COMPLETED) {
       throw new BadRequestException(
         `Chỉ có thể đánh giá đơn đã hoàn thành. Trạng thái hiện tại: ${session.status}`,
       );
     }
+
     if (!session.technicianId) {
       throw new BadRequestException('Đơn hàng chưa có thợ phụ trách.');
     }
 
-    // [GUARD 3] Kiểm tra đã đánh giá chưa (tránh spam)
     if (session.review) {
-      throw new BadRequestException('Bạn đã gửi đánh giá cho đơn hàng này rồi.');
+      throw new BadRequestException(
+        'Bạn đã gửi đánh giá cho đơn hàng này rồi.',
+      );
     }
 
-    // [TRANSACTION] Tạo review và cập nhật cache điểm thợ trong 1 giao dịch
     const technicianId = session.technicianId;
 
     const [newReview] = await this.prisma.$transaction(async (tx) => {
-      // Bước 1: Tạo bản ghi Review mới
       const review = await tx.review.create({
         data: {
           sessionId,
@@ -687,7 +1558,6 @@ export class ChatsService {
         },
       });
 
-      // Bước 2: Tính toán lại điểm trung bình sau khi thêm review mới
       const aggregate = await tx.review.aggregate({
         where: { technicianId },
         _avg: { rating: true },
@@ -697,11 +1567,10 @@ export class ChatsService {
       const newAvg = aggregate._avg.rating ?? dto.rating;
       const newCount = aggregate._count.rating;
 
-      // Bước 3: Cập nhật cache điểm vào bảng User của thợ
       await tx.user.update({
         where: { id: technicianId },
         data: {
-          averageRating: Math.round(newAvg * 10) / 10, // Làm tròn 1 chữ số thập phân
+          averageRating: Math.round(newAvg * 10) / 10,
           totalReviews: newCount,
         },
       });
@@ -719,7 +1588,6 @@ export class ChatsService {
       return [review];
     });
 
-    // Thông báo qua Socket cho thợ biết vừa nhận được đánh giá
     this.chatsGateway.emitToRoom(sessionId, 'review_submitted', {
       sessionId,
       rating: dto.rating,
@@ -734,37 +1602,36 @@ export class ChatsService {
   }
 
   async startRepair(sessionId: number, technicianId: number) {
-    // 1. Kiểm tra session có tồn tại và đúng thợ không
     const session = await this.prisma.chatSession.findUnique({
       where: { id: sessionId },
     });
 
     if (!session || session.technicianId !== technicianId) {
-      throw new BadRequestException('Bạn không có quyền thao tác trên đơn hàng này.');
+      throw new BadRequestException(
+        'Bạn không có quyền thao tác trên đơn hàng này.',
+      );
     }
 
-    // 2. Cập nhật trạng thái thành IN_PROGRESS
     const updatedSession = await this.prisma.chatSession.update({
       where: { id: sessionId },
       data: {
-        status: 'IN_PROGRESS',
+        status: JobStatus.IN_PROGRESS,
         updatedAt: new Date(),
       },
     });
 
-    // 3. Emit qua Socket để Flutter (bên Khách) tự động nhảy trạng thái
-    this.chatsGateway.server.to(`room_${sessionId}`).emit('job_status_changed', {
-      sessionId: sessionId,
-      status: 'IN_PROGRESS',
-      message: 'Thợ đã bắt đầu sửa chữa.',
-    });
+    this.chatsGateway.server.to(`room_${sessionId}`).emit(
+      'job_status_changed',
+      {
+        sessionId,
+        status: JobStatus.IN_PROGRESS,
+        message: 'Thợ đã bắt đầu sửa chữa.',
+      },
+    );
 
     return updatedSession;
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // NHIỆM VỤ 4: THỢ BẮT ĐẦU DI CHUYỂN (EN_ROUTE)
-  // ─────────────────────────────────────────────────────────────────
   async startEnRoute(sessionId: number, technicianId: number) {
     const session = await this.prisma.chatSession.findUnique({
       where: { id: sessionId },
@@ -774,44 +1641,57 @@ export class ChatsService {
       throw new ForbiddenException('Bạn không có quyền thực hiện thao tác này!');
     }
 
-    if (session.status !== 'MATCHED') {
-      throw new BadRequestException('Chỉ có thể bắt đầu di chuyển khi đơn vừa được nhận.');
+    if (session.status !== JobStatus.MATCHED) {
+      throw new BadRequestException(
+        'Chỉ có thể bắt đầu di chuyển khi đơn vừa được nhận.',
+      );
     }
 
     const updatedSession = await this.prisma.chatSession.update({
       where: { id: sessionId },
-      data: { status: 'EN_ROUTE' },
-      include: { user: { select: { fcmToken: true } }, technician: { select: { fullName: true } } }
+      data: {
+        status: JobStatus.EN_ROUTE,
+      },
+      include: {
+        user: {
+          select: {
+            fcmToken: true,
+          },
+        },
+        technician: {
+          select: {
+            fullName: true,
+          },
+        },
+      },
     });
 
-    // Thông báo cho khách biết thợ đang đến
     this.chatsGateway.emitToRoom(sessionId, 'job_status_changed', {
       sessionId,
-      status: 'EN_ROUTE',
+      status: JobStatus.EN_ROUTE,
       message: '🚀 Thợ đang trên đường di chuyển đến vị trí của bạn!',
     });
 
     if (updatedSession.user?.fcmToken) {
-      this.notificationsService.sendNotification({
-        token: updatedSession.user.fcmToken,
-        title: 'Thợ đang đến!',
-        body: `Thợ ${updatedSession.technician?.fullName || ''} đang trên đường đến vị trí của bạn.`,
-        channelId: 'job_alerts',
-        data: {
-          type: 'JOB_STATUS_UPDATED',
-          status: 'EN_ROUTE',
-          sessionId: sessionId.toString(),
-          click_action: 'FLUTTER_NOTIFICATION_CLICK',
-        },
-      }).catch(err => this.logger.error(`FCM Lỗi: ${err.message}`));
+      this.notificationsService
+        .sendNotification({
+          token: updatedSession.user.fcmToken,
+          title: 'Thợ đang đến!',
+          body: `Thợ ${updatedSession.technician?.fullName || ''} đang trên đường đến vị trí của bạn.`,
+          channelId: 'job_alerts',
+          data: {
+            type: 'JOB_STATUS_UPDATED',
+            status: JobStatus.EN_ROUTE,
+            sessionId: sessionId.toString(),
+            click_action: 'FLUTTER_NOTIFICATION_CLICK',
+          },
+        })
+        .catch((err) => this.logger.error(`FCM Lỗi: ${err.message}`));
     }
 
     return updatedSession;
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // NHIỆM VỤ 4.5: THỢ XÁC NHẬN ĐÃ ĐẾN NƠI (ARRIVED)
-  // ─────────────────────────────────────────────────────────────────
   async confirmArrival(sessionId: number, technicianId: number) {
     const session = await this.prisma.chatSession.findUnique({
       where: { id: sessionId },
@@ -821,63 +1701,84 @@ export class ChatsService {
       throw new ForbiddenException('Bạn không có quyền thực hiện thao tác này!');
     }
 
-    if (session.status !== 'EN_ROUTE') {
-      throw new BadRequestException('Chỉ có thể báo đã đến khi đang trong trạng thái di chuyển.');
+    if (session.status !== JobStatus.EN_ROUTE) {
+      throw new BadRequestException(
+        'Chỉ có thể báo đã đến khi đang trong trạng thái di chuyển.',
+      );
     }
 
     const updatedSession = await this.prisma.chatSession.update({
       where: { id: sessionId },
-      data: { status: 'ARRIVED' },
-      include: { user: { select: { fcmToken: true } } }
+      data: {
+        status: JobStatus.ARRIVED,
+      },
+      include: {
+        user: {
+          select: {
+            fcmToken: true,
+          },
+        },
+      },
     });
 
-    // Thông báo cho khách biết thợ đã đến
     this.chatsGateway.emitToRoom(sessionId, 'job_status_changed', {
       sessionId,
-      status: 'ARRIVED',
+      status: JobStatus.ARRIVED,
       message: '📍 Thợ đã đến vị trí của bạn! Vui lòng chuẩn bị để đón thợ.',
     });
 
     if (updatedSession.user?.fcmToken) {
-      this.notificationsService.sendNotification({
-        token: updatedSession.user.fcmToken,
-        title: 'Thợ đã đến nơi!',
-        body: 'Thợ đã đến trước cửa, bạn chú ý điện thoại nhé!',
-        channelId: 'job_alerts',
-        data: {
-          type: 'JOB_STATUS_UPDATED',
-          status: 'ARRIVED',
-          sessionId: sessionId.toString(),
-          click_action: 'FLUTTER_NOTIFICATION_CLICK',
-        },
-      }).catch(err => this.logger.error(`FCM Lỗi: ${err.message}`));
+      this.notificationsService
+        .sendNotification({
+          token: updatedSession.user.fcmToken,
+          title: 'Thợ đã đến nơi!',
+          body: 'Thợ đã đến trước cửa, bạn chú ý điện thoại nhé!',
+          channelId: 'job_alerts',
+          data: {
+            type: 'JOB_STATUS_UPDATED',
+            status: JobStatus.ARRIVED,
+            sessionId: sessionId.toString(),
+            click_action: 'FLUTTER_NOTIFICATION_CLICK',
+          },
+        })
+        .catch((err) => this.logger.error(`FCM Lỗi: ${err.message}`));
     }
 
     return updatedSession;
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // NHIỆM VỤ 5: KHÁCH HÀNG HỦY ĐƠN (Cập nhật logic chống "Quay xe")
-  // ─────────────────────────────────────────────────────────────────
   async cancelJob(sessionId: number, userId: number) {
     const session = await this.prisma.chatSession.findUnique({
       where: { id: sessionId },
       include: {
-        technician: { select: { id: true, fcmToken: true } },
-        user: { select: { id: true, fullName: true, avatarUrl: true, fcmToken: true } },
+        technician: {
+          select: {
+            id: true,
+            fcmToken: true,
+          },
+        },
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            avatarUrl: true,
+            fcmToken: true,
+          },
+        },
       },
     });
 
-    if (!session || (session.userId !== userId && session.technicianId !== userId)) {
+    if (
+      !session ||
+      (session.userId !== userId && session.technicianId !== userId)
+    ) {
       throw new ForbiddenException('Bạn không có quyền hủy đơn này!');
     }
 
     const isCustomer = userId === session.userId;
 
     if (isCustomer) {
-      // 1. LOGIC CHO KHÁCH HÀNG HỦY ĐƠN
-      // CHỐNG QUAY XE: Nếu thợ đang đi (EN_ROUTE) thì không cho khách tự hủy qua app
-      if (session.status === 'EN_ROUTE') {
+      if (session.status === JobStatus.EN_ROUTE) {
         throw new BadRequestException(
           'Thợ đang trên đường đến, bạn không thể tự hủy đơn lúc này. Vui lòng liên hệ trực tiếp với thợ hoặc tổng đài để hỗ trợ.',
         );
@@ -885,10 +1786,11 @@ export class ChatsService {
 
       const updatedSession = await this.prisma.chatSession.update({
         where: { id: sessionId },
-        data: { status: 'CANCELLED' },
+        data: {
+          status: JobStatus.CANCELLED,
+        },
       });
 
-      // PUSH NOTIFICATION CỰC MẠNH CHO THỢ NẾU KHÁCH HỦY
       if (session.technicianId && session.technician?.fcmToken) {
         await this.notificationsService.sendNotification({
           token: session.technician.fcmToken,
@@ -904,66 +1806,70 @@ export class ChatsService {
 
       this.chatsGateway.emitToRoom(sessionId, 'job_status_changed', {
         sessionId,
-        status: 'CANCELLED',
+        status: JobStatus.CANCELLED,
         message: '🔴 Đơn hàng đã bị hủy bởi Khách hàng.',
       });
 
       return updatedSession;
-    } else {
-      // 2. LOGIC CHO THỢ HỦY ĐƠN (Trả về BROADCASTING)
-      if (!['MATCHED', 'EN_ROUTE', 'IN_PROGRESS'].includes(session.status)) {
-        throw new BadRequestException('Chỉ có thể hủy đơn đang trong quá trình thực hiện.');
-      }
-
-      await this.prisma.chatSession.update({
-        where: { id: sessionId },
-        data: {
-          status: 'BROADCASTING',
-          technicianId: null,
-          version: { increment: 1 },
-        },
-      });
-
-      // Ghi lịch sử bùng kèo
-      await this.prisma.sessionAssignmentHistory.create({
-        data: {
-          chatSessionId: sessionId,
-          technicianId: userId,
-          action: 'MANUAL_CANCEL',
-        },
-      });
-
-      const updated = await this.prisma.chatSession.findUnique({ where: { id: sessionId } });
-
-      // Phát đơn lại cho các thợ khác
-      this.chatsGateway.emitGlobal('new_broadcast_job', {
-        sessionId: session.id,
-        deviceType: session.deviceType,
-        symptom: session.symptom,
-        aiSummary: session.aiSummary,
-        createdAt: session.createdAt,
-        version: updated!.version,
-        user: {
-          id: session.userId,
-          fullName: session.user.fullName || 'Khách hàng',
-          avatarUrl: session.user.avatarUrl,
-        },
-      });
-
-      // Báo cho khách biết thợ đã hủy
-      this.chatsGateway.emitToRoom(sessionId, 'job_status_changed', {
-        sessionId: sessionId,
-        status: 'BROADCASTING',
-        message: 'Thợ vừa hủy đơn. Hệ thống đang tìm thợ mới cho bạn...',
-      });
-
-      return { success: true, message: 'Thợ đã hủy đơn thành công. Đơn đang được tìm người mới.' };
     }
+
+    if (
+      session.status !== JobStatus.MATCHED &&
+      session.status !== JobStatus.EN_ROUTE &&
+      session.status !== JobStatus.IN_PROGRESS
+    ) {
+      throw new BadRequestException(
+        'Chỉ có thể hủy đơn đang trong quá trình thực hiện.',
+      );
+    }
+
+    await this.prisma.chatSession.update({
+      where: { id: sessionId },
+      data: {
+        status: JobStatus.BROADCASTING,
+        technicianId: null,
+        version: { increment: 1 },
+      },
+    });
+
+    await this.prisma.sessionAssignmentHistory.create({
+      data: {
+        chatSessionId: sessionId,
+        technicianId: userId,
+        action: 'MANUAL_CANCEL',
+      },
+    });
+
+    const updated = await this.prisma.chatSession.findUnique({
+      where: { id: sessionId },
+    });
+
+    this.chatsGateway.emitGlobal('new_broadcast_job', {
+      sessionId: session.id,
+      deviceType: session.deviceType,
+      symptom: session.symptom,
+      aiSummary: session.aiSummary,
+      createdAt: session.createdAt,
+      version: updated?.version,
+      user: {
+        id: session.userId,
+        fullName: session.user.fullName || 'Khách hàng',
+        avatarUrl: session.user.avatarUrl,
+      },
+    });
+
+    this.chatsGateway.emitToRoom(sessionId, 'job_status_changed', {
+      sessionId,
+      status: JobStatus.BROADCASTING,
+      message: 'Thợ vừa hủy đơn. Hệ thống đang tìm thợ mới cho bạn...',
+    });
+
+    return {
+      success: true,
+      message: 'Thợ đã hủy đơn thành công. Đơn đang được tìm người mới.',
+    };
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // NHIỆM VỤ 6: KHÁCH HÀNG ĐỔI THỢ (Trị Ghosting)
-  // ─────────────────────────────────────────────────────────────────
   async redispatchJob(sessionId: number, userId: number) {
     const session = await this.prisma.chatSession.findUnique({
       where: { id: sessionId },
@@ -973,11 +1879,15 @@ export class ChatsService {
       throw new ForbiddenException('Bạn không có quyền thực hiện thao tác này!');
     }
 
-    if (session.status !== 'MATCHED' && session.status !== 'EN_ROUTE') {
-      throw new BadRequestException('Chỉ có thể tìm thợ khác khi đơn chưa bắt đầu sửa.');
+    if (
+      session.status !== JobStatus.MATCHED &&
+      session.status !== JobStatus.EN_ROUTE
+    ) {
+      throw new BadRequestException(
+        'Chỉ có thể tìm thợ khác khi đơn chưa bắt đầu sửa.',
+      );
     }
 
-    // Ghi lại lịch sử bùng kèo (UNASSIGNED) cho thợ cũ
     if (session.technicianId) {
       await this.prisma.sessionAssignmentHistory.create({
         data: {
@@ -988,59 +1898,62 @@ export class ChatsService {
       });
     }
 
-    // Đưa đơn về lại trạng thái phát sóng
     const updatedSession = await this.prisma.chatSession.update({
       where: { id: sessionId },
       data: {
-        status: 'BROADCASTING',
-        technicianId: null, // Đá thợ cũ ra
+        status: JobStatus.BROADCASTING,
+        technicianId: null,
       },
     });
 
-    // Kích hoạt lại BullMQ để tìm thợ mới
     await this.jobsService.addJobDispatch(sessionId, 1, 0);
 
     this.chatsGateway.emitToRoom(sessionId, 'job_status_changed', {
       sessionId,
-      status: 'BROADCASTING',
+      status: JobStatus.BROADCASTING,
       message: '🔎 Đang tìm thợ mới cho bạn...',
     });
 
     return updatedSession;
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // NHIỆM VỤ 7: TỰ ĐỘNG DỌN RÁC (Auto-complete sau 72h)
-  // ─────────────────────────────────────────────────────────────────
-  @Cron('0 * * * *') // Chạy mỗi giờ (vào phút 0)
+  @Cron('0 * * * *')
   async handleAutoCompleteOldJobs() {
     this.logger.log('🧹 [Cron] Đang quét các đơn hàng bị treo quá 72h...');
-    
+
     const threshold = new Date();
     threshold.setHours(threshold.getHours() - 72);
 
     const staleSessions = await this.prisma.chatSession.findMany({
       where: {
-        status: 'IN_PROGRESS',
+        status: JobStatus.IN_PROGRESS,
         updatedAt: { lt: threshold },
       },
     });
 
-    if (staleSessions.length > 0) {
-      for (const session of staleSessions) {
-        await this.prisma.chatSession.update({
-          where: { id: session.id },
-          data: { status: 'COMPLETED' },
-        });
-        this.logger.log(`✅ [Cron] Tự động đóng đơn #${session.id} (Treo > 72h)`);
-      }
+    if (staleSessions.length === 0) return;
+
+    for (const session of staleSessions) {
+      await this.prisma.chatSession.update({
+        where: { id: session.id },
+        data: {
+          status: JobStatus.COMPLETED,
+        },
+      });
+
+      this.logger.log(
+        `✅ [Cron] Tự động đóng đơn #${session.id} (Treo > 72h)`,
+      );
     }
   }
 
   async deleteUserSession(userId: number, sessionId: number) {
     try {
       const session = await this.prisma.chatSession.findFirst({
-        where: { id: sessionId, userId: userId },
+        where: {
+          id: sessionId,
+          userId,
+        },
       });
 
       if (!session) {
@@ -1048,57 +1961,86 @@ export class ChatsService {
       }
 
       await this.prisma.aiReasoningLog.deleteMany({
-        where: { sessionId: sessionId },
+        where: { sessionId },
+      });
+
+      await this.prisma.message.deleteMany({
+        where: { sessionId },
       });
 
       await this.prisma.chatSession.delete({
         where: { id: sessionId },
       });
 
-      return { success: true, message: 'Đã xóa ca chẩn đoán thành công.' };
+      return {
+        success: true,
+        message: 'Đã xóa ca chẩn đoán thành công.',
+      };
     } catch (error) {
       this.logger.error(`Lỗi khi xóa session ${sessionId}:`, error);
-      if (error instanceof NotFoundException) throw error;
+
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+
       throw new InternalServerErrorException('Không thể xóa ca chẩn đoán.');
     }
   }
 
-  // Xóa hàng loạt nhiều phên AI theo danh sách ID
   async deleteBulkUserSessions(userId: number, ids: number[]) {
     if (!ids || ids.length === 0) {
-      return { success: true, deleted: 0 };
+      return {
+        success: true,
+        deleted: 0,
+      };
     }
+
     try {
-      // Chỉ xóa các session thuộc về userId này (bảo mật)
       const sessions = await this.prisma.chatSession.findMany({
-        where: { id: { in: ids }, userId: userId },
-        select: { id: true },
+        where: {
+          id: { in: ids },
+          userId,
+        },
+        select: {
+          id: true,
+        },
       });
 
-      const validIds = sessions.map(s => s.id);
+      const validIds = sessions.map((session) => session.id);
+
       if (validIds.length === 0) {
         throw new NotFoundException('Không tìm thấy phiên nào thuộc về bạn.');
       }
 
-      // Xóa log AI trước
       await this.prisma.aiReasoningLog.deleteMany({
-        where: { sessionId: { in: validIds } },
+        where: {
+          sessionId: { in: validIds },
+        },
       });
 
-      // Xóa các message trong session
       await this.prisma.message.deleteMany({
-        where: { sessionId: { in: validIds } },
+        where: {
+          sessionId: { in: validIds },
+        },
       });
 
-      // Xóa các session
       const result = await this.prisma.chatSession.deleteMany({
-        where: { id: { in: validIds } },
+        where: {
+          id: { in: validIds },
+        },
       });
 
-      return { success: true, deleted: result.count };
+      return {
+        success: true,
+        deleted: result.count,
+      };
     } catch (error) {
       this.logger.error('Lỗi khi xóa hàng loạt session:', error);
-      if (error instanceof NotFoundException) throw error;
+
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+
       throw new InternalServerErrorException('Không thể xóa các ca chẩn đoán.');
     }
   }
@@ -1129,42 +2071,55 @@ export class ChatsService {
   async getUserRepairHistory(userId: number) {
     const sessions = await this.prisma.chatSession.findMany({
       where: {
-        userId: userId, 
-        status: { in: ['COMPLETED', 'DONE'] }, 
+        userId: userId,
+        status: { in: ['COMPLETED', 'DONE'] },
         isHiddenByCustomer: false, // Ẩn những ca mà khách đã xóa/ẩn
       },
-      orderBy: { updatedAt: 'desc' },
+      orderBy: {
+        updatedAt: 'desc',
+      },
       include: {
-        technician: { 
-          select: { id: true, fullName: true, phoneNumber: true, averageRating: true } 
+        technician: {
+          select: {
+            id: true,
+            fullName: true,
+            phoneNumber: true,
+            averageRating: true,
+          },
         },
-        review: true, 
+        review: true,
         quotes: {
-          where: { status: 'ACCEPTED' } 
-        }
-      }
+          where: {
+            status: 'ACCEPTED',
+          },
+        },
+      },
     });
 
-    return sessions.map(session => {
-      const acceptedQuote = session.quotes.length > 0 ? session.quotes[0] : null;
+    return sessions.map((session) => {
+      const acceptedQuote =
+        session.quotes.length > 0 ? session.quotes[0] : null;
 
       return {
         id: session.id.toString(),
         title: session.deviceType || 'Sửa chữa thiết bị',
         date: session.updatedAt.toISOString(),
-        chatSummary: session.aiSummary || 'Đã thống nhất giá và hoàn tất sửa chữa.',
+        chatSummary:
+          session.aiSummary || 'Đã thống nhất giá và hoàn tất sửa chữa.',
         status: session.status,
-        
+
         mechanicName: session.technician?.fullName || 'Thợ sửa chữa',
         mechanicPhone: session.technician?.phoneNumber || 'Chưa cập nhật',
-        
-        rating: session.review?.rating || session.technician?.averageRating || 5.0,
-        
+
+        rating:
+          session.review?.rating || session.technician?.averageRating || 5.0,
+
         reviewComment: session.review?.comment || null,
-        
-        agreedPrice: acceptedQuote ? `${acceptedQuote.amount.toLocaleString('vi-VN')} đ` : 'Chưa chốt giá',
+
+        agreedPrice: acceptedQuote
+          ? `${acceptedQuote.amount.toLocaleString('vi-VN')} đ`
+          : 'Chưa chốt giá',
       };
     });
   }
-
 }

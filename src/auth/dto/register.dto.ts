@@ -1,12 +1,12 @@
-import { 
-  IsNotEmpty, 
-  IsString, 
-  IsEmail, 
-  IsEnum, 
-  IsOptional, 
-  Length, 
-  MaxLength, 
-  Matches 
+import {
+  IsNotEmpty,
+  IsString,
+  IsEmail,
+  IsEnum,
+  IsOptional,
+  Length,
+  MaxLength,
+  Matches,
 } from 'class-validator';
 
 enum Gender {

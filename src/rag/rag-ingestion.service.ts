@@ -10,6 +10,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import {
   AccessLevel,
   Prisma,
+  RagDocumentKind,
   RagDocumentStatus,
   RagFileType,
 } from '@prisma/client';
@@ -26,8 +27,9 @@ import { RagChunkingService } from './rag-chunking.service';
 import { RagEmbeddingService } from './rag-embedding.service';
 import { buildChunkEmbeddingText } from './rag-embedding-text.util';
 import { RagFileParserService } from './rag-file-parser.service';
-import { normalizeRagFilename } from './rag-filename.util';
+import { hasInvalidRagFilename, normalizeRagFilename } from './rag-filename.util';
 import { RagTextCleanerService } from './rag-text-cleaner.service';
+
 
 type ImportedDocumentResult = {
   id: number;
@@ -72,6 +74,17 @@ type ChunkPayload = ChunkDraft & {
 
 type PrismaRawExecutor = Pick<Prisma.TransactionClient, '$executeRaw'>;
 
+type SuggestedImportMetadata = {
+  title: string;
+  description: string | null;
+  kind: RagDocumentKind | null;
+  category: string | null;
+  brand: string | null;
+  modelCode: string | null;
+  source: string | null;
+  tags: string[];
+};
+
 @Injectable()
 export class RagIngestionService {
   private readonly logger = new Logger(RagIngestionService.name);
@@ -85,7 +98,7 @@ export class RagIngestionService {
     private readonly ragEmbeddingService: RagEmbeddingService,
     @InjectQueue('rag-import-queue')
     private readonly ragImportQueue: Queue,
-  ) {}
+  ) { }
 
   private buildChunkTitle(
     baseTitle: string,
@@ -108,16 +121,271 @@ export class RagIngestionService {
       return [];
     }
 
-    if (Array.isArray(tags)) {
-      return tags
+    const normalized = Array.isArray(tags)
+      ? tags
         .map((tag) => String(tag).trim())
-        .filter((tag) => tag.length > 0);
+        .filter((tag) => tag.length > 0)
+      : String(tags)
+          .split(',')
+          .map((tag) => tag.trim())
+          .filter((tag) => tag.length > 0);
+
+    return [...new Set(normalized)];
+  }
+
+  private prettifyFileTitle(fileName: string) {
+    return fileName
+      .replace(/\.[^.]+$/, '')
+      .replace(/[_-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private normalizeTextForSuggestion(text: string) {
+    return text
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/đ/g, 'd')
+      .replace(/[^\p{L}\p{N}\s/-]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private includesAnyPhrase(text: string, phrases: string[]) {
+    return phrases.some((phrase) => text.includes(phrase));
+  }
+
+  private inferSuggestedCategory(normalizedText: string): string | null {
+    const categoryMap: Array<[string[], string]> = [
+      [['may lanh', 'dieu hoa', 'dieu hoa khong khi'], 'Máy lạnh'],
+      [['may giat'], 'Máy giặt'],
+      [['tu lanh'], 'Tủ lạnh'],
+      [['binh nong lanh', 'may nuoc nong', 'binh nuoc nong'], 'Máy nước nóng'],
+      [['lo vi song'], 'Lò vi sóng'],
+      [['lo nuong'], 'Lò nướng'],
+      [['may hut mui'], 'Máy hút mùi'],
+      [['may bom'], 'Máy bơm'],
+      [['o dien', 'cong tac', 'aptomat', 'cau dao'], 'Thiết bị điện'],
+    ];
+
+    for (const [keywords, label] of categoryMap) {
+      if (this.includesAnyPhrase(normalizedText, keywords)) {
+        return label;
+      }
     }
 
-    return String(tags)
-      .split(',')
-      .map((tag) => tag.trim())
-      .filter((tag) => tag.length > 0);
+    return null;
+  }
+
+  private inferSuggestedBrand(normalizedText: string): string | null {
+    const brandMap: Array<[string, string]> = [
+      ['daikin', 'Daikin'],
+      ['panasonic', 'Panasonic'],
+      ['toshiba', 'Toshiba'],
+      ['lg', 'LG'],
+      ['samsung', 'Samsung'],
+      ['electrolux', 'Electrolux'],
+      ['sharp', 'Sharp'],
+      ['aqua', 'Aqua'],
+      ['hitachi', 'Hitachi'],
+      ['mitsubishi', 'Mitsubishi'],
+      ['casper', 'Casper'],
+      ['gree', 'Gree'],
+      ['funiki', 'Funiki'],
+      ['ariston', 'Ariston'],
+    ];
+
+    for (const [keyword, label] of brandMap) {
+      if (new RegExp(`\\b${keyword}\\b`, 'i').test(normalizedText)) {
+        return label;
+      }
+    }
+
+    return null;
+  }
+
+  private inferSuggestedModelCode(rawText: string): string | null {
+    const matches = rawText.match(/\b[A-Z0-9-]{4,20}\b/g) ?? [];
+    const candidates = matches.filter((candidate) => {
+      const value = candidate.toUpperCase();
+      if (!/[A-Z]/.test(value) || !/\d/.test(value)) {
+        return false;
+      }
+
+      return ![
+        'DOCX',
+        'XLSX',
+        'PDF',
+        'JSON',
+        'HTML',
+        'RAG',
+        'FAQ',
+      ].includes(value);
+    });
+
+    return candidates[0] ?? null;
+  }
+
+  private inferSuggestedKind(
+    normalizedText: string,
+    originalFileName: string,
+  ): RagDocumentKind | null {
+    const combinedText = `${normalizedText} ${this.normalizeTextForSuggestion(originalFileName)}`;
+
+    if (this.includesAnyPhrase(combinedText, ['faq', 'cau hoi thuong gap'])) {
+      return RagDocumentKind.FAQ;
+    }
+
+    if (
+      this.includesAnyPhrase(combinedText, [
+        'bang gia',
+        'bao gia',
+        'gia dich vu',
+        'don gia',
+      ])
+    ) {
+      return RagDocumentKind.PRICE_TABLE;
+    }
+
+    if (
+      this.includesAnyPhrase(combinedText, [
+        'manual',
+        'huong dan su dung',
+        'so tay',
+        'user guide',
+      ])
+    ) {
+      return RagDocumentKind.DEVICE_MANUAL;
+    }
+
+    if (
+      this.includesAnyPhrase(combinedText, [
+        'chinh sach',
+        'quy dinh',
+        'bao hanh',
+        'quy trinh',
+      ])
+    ) {
+      return RagDocumentKind.REPAIR_POLICY;
+    }
+
+    if (
+      this.includesAnyPhrase(combinedText, [
+        'ghi chu noi bo',
+        'internal note',
+        'noi bo',
+      ])
+    ) {
+      return RagDocumentKind.INTERNAL_NOTE;
+    }
+
+    if (
+      this.includesAnyPhrase(combinedText, [
+        'ma loi',
+        'loi',
+        'khong mat',
+        'khong lanh',
+        'khong chay',
+        'khong len nguon',
+        'chay nuoc',
+        'keu to',
+      ])
+    ) {
+      return RagDocumentKind.TROUBLESHOOTING_GUIDE;
+    }
+
+    return null;
+  }
+
+  private buildSuggestedDescription(cleanedText: string, title: string) {
+    const lines = cleanedText
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    const candidate = lines.find(
+      (line) => line !== title && line.length >= 32 && line.length <= 220,
+    );
+
+    return candidate ? candidate.slice(0, RAG_LIMITS.MAX_DESCRIPTION_CHARS) : null;
+  }
+
+  private buildSuggestedTags(params: {
+    normalizedText: string;
+    category: string | null;
+    brand: string | null;
+    modelCode: string | null;
+    kind: RagDocumentKind | null;
+  }) {
+    const { normalizedText, category, brand, modelCode, kind } = params;
+    const tags = new Set<string>();
+
+    if (category) tags.add(category);
+    if (brand) tags.add(brand);
+    if (modelCode) tags.add(modelCode);
+
+    const keywordTags: Array<[string[], string]> = [
+      [['inverter'], 'inverter'],
+      [['bao tri', 've sinh'], 'bảo trì'],
+      [['ma loi', 'error'], 'mã lỗi'],
+      [['an toan', 'ro dien', 'chap dien', 'boc khoi'], 'an toàn điện'],
+      [['khong mat', 'khong lanh'], 'không mát'],
+      [['khong vat'], 'không vắt'],
+      [['khong xa'], 'không xả nước'],
+      [['chay nuoc', 'ri nuoc'], 'chảy nước'],
+      [['bang gia', 'bao gia'], 'bảng giá'],
+    ];
+
+    for (const [phrases, label] of keywordTags) {
+      if (this.includesAnyPhrase(normalizedText, phrases)) {
+        tags.add(label);
+      }
+    }
+
+    if (kind === RagDocumentKind.DEVICE_MANUAL) {
+      tags.add('hướng dẫn sử dụng');
+    }
+
+    return Array.from(tags).slice(0, RAG_LIMITS.MAX_TAGS);
+  }
+
+  private buildSuggestedMetadata(params: {
+    originalFileName: string;
+    cleanedText: string;
+  }): SuggestedImportMetadata {
+    const { originalFileName, cleanedText } = params;
+    const fallbackTitle = this.prettifyFileTitle(originalFileName);
+    const normalizedText = this.normalizeTextForSuggestion(
+      `${fallbackTitle}\n${cleanedText.slice(0, 20_000)}`,
+    );
+    const category = this.inferSuggestedCategory(normalizedText);
+    const brand = this.inferSuggestedBrand(normalizedText);
+    const modelCode = this.inferSuggestedModelCode(
+      `${originalFileName}\n${cleanedText.slice(0, 10_000)}`,
+    );
+    const kind = this.inferSuggestedKind(normalizedText, originalFileName);
+    const title = fallbackTitle;
+    const description = this.buildSuggestedDescription(cleanedText, title);
+    const source = fallbackTitle || null;
+    const tags = this.buildSuggestedTags({
+      normalizedText,
+      category,
+      brand,
+      modelCode,
+      kind,
+    });
+
+    return {
+      title,
+      description,
+      kind,
+      category,
+      brand,
+      modelCode,
+      source,
+      tags,
+    };
   }
 
   private async updateChunkEmbedding(
@@ -373,9 +641,16 @@ export class RagIngestionService {
       const parsed = await this.ragFileParserService.parse(syntheticFile);
       const cleanedText = this.ragTextCleanerService.clean(parsed.content);
 
-      if (!cleanedText) {
+      if (!cleanedText.trim()) {
+        const isPdfFile =
+          document.fileType === RagFileType.PDF ||
+          document.mimeType?.toLowerCase().includes('pdf') ||
+          document.originalFileName?.toLowerCase().endsWith('.pdf');
+
         throw new BadRequestException(
-          'File không có nội dung hợp lệ sau khi làm sạch.',
+          isPdfFile
+            ? 'PDF này là file scan/ảnh, hệ thống chưa hỗ trợ OCR. Vui lòng upload PDF có thể copy chữ, DOCX hoặc TXT.'
+            : 'File không có nội dung hợp lệ sau khi làm sạch.',
         );
       }
 
@@ -487,10 +762,12 @@ export class RagIngestionService {
 
     if (parsedSegments && parsedSegments.length > 0) {
       return normalizedSegments(
-        parsedSegments.flatMap((segment, segmentIndex) => {
-          const chunkedSegments = this.ragChunkingService.chunk({
-            content: segment.content,
-          });
+          parsedSegments.flatMap((segment, segmentIndex) => {
+            const chunkedSegments = this.ragChunkingService.chunk({
+              content: segment.content,
+              maxChars: RAG_LIMITS.DEFAULT_CHUNK_MAX_CHARS,
+              overlapChars: RAG_LIMITS.DEFAULT_CHUNK_OVERLAP_CHARS,
+            });
 
           return chunkedSegments.map((chunk) => ({
             title:
@@ -509,7 +786,11 @@ export class RagIngestionService {
       );
     }
 
-    const chunkedSegments = this.ragChunkingService.chunk({ content });
+    const chunkedSegments = this.ragChunkingService.chunk({
+      content,
+      maxChars: RAG_LIMITS.DEFAULT_CHUNK_MAX_CHARS,
+      overlapChars: RAG_LIMITS.DEFAULT_CHUNK_OVERLAP_CHARS,
+    });
 
     return normalizedSegments(
       chunkedSegments.map((chunk) => ({
@@ -675,12 +956,12 @@ export class RagIngestionService {
           tokenCount: chunk.tokenCount,
           metadata: chunk.metadata
             ? {
-                ...chunk.metadata,
-                originalFileName,
-              }
+              ...chunk.metadata,
+              originalFileName,
+            }
             : {
-                originalFileName,
-              },
+              originalFileName,
+            },
         },
       });
 
@@ -711,6 +992,63 @@ export class RagIngestionService {
       },
     });
   }
+  private async validateFileBeforeStorage(
+    file: Express.Multer.File,
+    _fileType: RagFileType,
+  ): Promise<void> {
+    this.ragFileParserService.validateInput(file);
+  }
+
+  async suggestImportMetadata(file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('Không tìm thấy file để đọc gợi ý.');
+    }
+
+    if (file.size <= 0) {
+      throw new BadRequestException('File import đang rỗng.');
+    }
+
+    const originalFileName = normalizeRagFilename(file.originalname);
+
+    if (!originalFileName.trim()) {
+      throw new BadRequestException('Tên file import không hợp lệ.');
+    }
+
+    if (originalFileName.length > RAG_LIMITS.MAX_FILENAME_CHARS) {
+      throw new BadRequestException(
+        `Tên file quá dài. Tối đa cho phép: ${RAG_LIMITS.MAX_FILENAME_CHARS} ký tự.`,
+      );
+    }
+
+    if (hasInvalidRagFilename(originalFileName)) {
+      throw new BadRequestException(
+        'Tên file chứa ký tự điều khiển không hợp lệ.',
+      );
+    }
+
+    file.originalname = originalFileName;
+
+    const fileType = this.ragFileParserService.inferFileType(file);
+    await this.validateFileBeforeStorage(file, fileType);
+
+    const parsed = await this.ragFileParserService.parse(file);
+    const cleanedText = this.ragTextCleanerService.clean(parsed.content);
+
+    if (!cleanedText.trim()) {
+      throw new BadRequestException(
+        'Không đọc được nội dung hợp lệ từ file để gợi ý thông tin.',
+      );
+    }
+
+    return {
+      message: 'Đã đọc file và tạo gợi ý thông tin tự động.',
+      metadata: this.buildSuggestedMetadata({
+        originalFileName,
+        cleanedText,
+      }),
+    };
+  }
+
   async importFile(
     file: Express.Multer.File,
     dto: ImportRagFileDto,
@@ -720,12 +1058,29 @@ export class RagIngestionService {
       throw new BadRequestException('Không tìm thấy file để import.');
     }
 
+    if (file.size <= 0) {
+      throw new BadRequestException('File import đang rỗng.');
+    }
+
     const originalFileName = normalizeRagFilename(file.originalname);
 
-    /*
-      Quan trọng:
-      Gán lại để upload/parser/log phía sau đều dùng tên file đã sửa mojibake.
-    */
+    if (!originalFileName.trim()) {
+      throw new BadRequestException('Tên file import không hợp lệ.');
+    }
+
+    if (originalFileName.length > RAG_LIMITS.MAX_FILENAME_CHARS) {
+      throw new BadRequestException(
+        `Tên file quá dài. Tối đa cho phép: ${RAG_LIMITS.MAX_FILENAME_CHARS} ký tự.`,
+      );
+    }
+
+    if (hasInvalidRagFilename(originalFileName)) {
+      throw new BadRequestException(
+        'Tên file chứa ký tự điều khiển không hợp lệ.',
+      );
+    }
+
+    // Gán lại để upload/parser/log phía sau đều dùng tên file đã sửa mojibake.
     file.originalname = originalFileName;
 
     const checksum = createHash('sha256').update(file.buffer).digest('hex');
@@ -733,15 +1088,12 @@ export class RagIngestionService {
 
     await this.ensureNoActiveDuplicate(checksum);
 
+    // Chặn PDF scan/ảnh trước khi upload R2 và trước khi tạo RagDocument.
+    await this.validateFileBeforeStorage(file, fileType);
+
     const storedFileName = `${Date.now()}-${checksum.slice(0, 12)}${extname(
       originalFileName,
     ).toLowerCase()}`;
-
-    const uploadResult = await this.uploadService.uploadFileWithMetadata(
-      file,
-      'rag-knowledge',
-      storedFileName,
-    );
 
     const baseTitle =
       dto.title?.trim() || originalFileName.replace(/\.[^.]+$/, '');
@@ -753,6 +1105,12 @@ export class RagIngestionService {
     const tags = this.normalizeTags(dto.tags);
 
     try {
+      const uploadResult = await this.uploadService.uploadFileWithMetadata(
+        file,
+        'rag-knowledge',
+        storedFileName,
+      );
+
       const createdDocument = await this.prisma.ragDocument.create({
         data: {
           title: baseTitle,
@@ -765,7 +1123,7 @@ export class RagIngestionService {
           fileType,
           fileSizeBytes: BigInt(file.size),
           checksum,
-          kind: dto.kind,
+          kind: dto.kind ?? null,
           category,
           brand,
           modelCode,
@@ -773,7 +1131,7 @@ export class RagIngestionService {
           tags,
           accessLevel,
           status: RagDocumentStatus.UPLOADED,
-          uploadedById,
+          uploadedById: uploadedById ?? null,
         },
       });
 

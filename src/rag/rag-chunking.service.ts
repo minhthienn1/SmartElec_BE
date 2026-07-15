@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { RAG_LIMITS } from './rag.constants';
 
 type ChunkingParams = {
   content: string;
@@ -14,12 +15,16 @@ type ChunkingResult = {
 
 @Injectable()
 export class RagChunkingService {
-  private readonly minChars = 350;
+  private readonly minChars = RAG_LIMITS.MIN_CHUNK_CHARS;
 
   chunk(params: ChunkingParams): ChunkingResult[] {
-    const { content, maxChars = 1800, overlapChars = 0 } = params;
-    const normalized = this.normalize(content);
+    const {
+      content,
+      maxChars = RAG_LIMITS.DEFAULT_CHUNK_MAX_CHARS,
+      overlapChars = RAG_LIMITS.DEFAULT_CHUNK_OVERLAP_CHARS,
+    } = params;
 
+    const normalized = this.normalize(content);
     if (!normalized) {
       return [];
     }
@@ -84,11 +89,9 @@ export class RagChunkingService {
 
       if (this.isHeading(trimmed) && current.length > 0) {
         const currentText = current.join('\n').trim();
-
         if (currentText) {
           sections.push(currentText);
         }
-
         current = [trimmed];
       } else {
         current.push(line);
@@ -96,7 +99,6 @@ export class RagChunkingService {
     }
 
     const lastText = current.join('\n').trim();
-
     if (lastText) {
       sections.push(lastText);
     }
@@ -195,7 +197,6 @@ export class RagChunkingService {
       }
 
       const chunk = text.slice(start, end).trim();
-
       if (chunk) {
         chunks.push(chunk);
       }
@@ -242,12 +243,11 @@ export class RagChunkingService {
       }
 
       const context = this.getTailContext(chunks[index - 1], overlapChars);
-
       if (!context) {
         return chunk;
       }
 
-      return `${context}\n${chunk}`;
+      return `${context}\n${chunk}`.trim();
     });
   }
 
