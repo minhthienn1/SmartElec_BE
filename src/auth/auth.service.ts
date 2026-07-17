@@ -25,6 +25,8 @@ type ZaloResolvedProfile = {
   zaloId: string;
   name: string | null;
   avatarUrl: string | null;
+  phoneNumber: string | null;
+  gender: 'MALE' | 'FEMALE' | 'OTHER' | null;
 };
 
 type ZaloTokenResponse = {
@@ -42,6 +44,12 @@ type ZaloProfileData = {
   name?: string;
   picture?: string | { data?: { url?: string } };
   avatar?: string;
+  phone?: string;
+  phoneNumber?: string;
+  phone_number?: string;
+  PhoneNumber?: string;
+  gender?: string | number;
+  sex?: string | number;
 };
 
 type ZaloProfileResponse = ZaloProfileData & {
@@ -187,6 +195,44 @@ export class AuthService {
     return data.avatar || picture?.data?.url || null;
   }
 
+  private getPhoneFromZaloProfile(data: ZaloProfileData) {
+    const value =
+      data.phoneNumber ||
+      data.phone_number ||
+      data.phone ||
+      data.PhoneNumber;
+
+    return value?.trim() || null;
+  }
+
+  private getGenderFromZaloProfile(
+    data: ZaloProfileData,
+  ): 'MALE' | 'FEMALE' | 'OTHER' | null {
+    const rawValue = data.gender ?? data.sex;
+
+    if (rawValue === undefined || rawValue === null) {
+      return null;
+    }
+
+    const normalized = String(rawValue).trim().toLowerCase();
+
+    if (normalized === '1' || normalized === 'male' || normalized === 'nam') {
+      return 'MALE';
+    }
+
+    if (
+      normalized === '0' ||
+      normalized === '2' ||
+      normalized === 'female' ||
+      normalized === 'nu' ||
+      normalized === 'nữ'
+    ) {
+      return 'FEMALE';
+    }
+
+    return 'OTHER';
+  }
+
   private async fetchZaloProfile(
     accessToken: string,
   ): Promise<ZaloResolvedProfile> {
@@ -225,6 +271,8 @@ export class AuthService {
       zaloId,
       name: data.name?.trim() || null,
       avatarUrl: this.getAvatarFromZaloProfile(data),
+      phoneNumber: this.getPhoneFromZaloProfile(data),
+      gender: this.getGenderFromZaloProfile(data),
     };
   }
 
@@ -395,7 +443,8 @@ export class AuthService {
 
       const tempPassword = uuidv4();
       const hashedTempPassword = await bcrypt.hash(tempPassword, 10);
-      const tempPhone = `ZALO_${profile.zaloId.substring(0, 15)}`;
+      const tempPhone =
+        profile.phoneNumber || `ZALO_${profile.zaloId.substring(0, 15)}`;
 
       user = await this.prisma.user.create({
         data: {
@@ -404,7 +453,7 @@ export class AuthService {
           avatarUrl: profile.avatarUrl,
           phoneNumber: tempPhone,
           password: hashedTempPassword,
-          gender: 'OTHER',
+          gender: profile.gender || 'OTHER',
           needsPassword: true,
         },
       });
@@ -421,6 +470,14 @@ export class AuthService {
             user.fullName && user.fullName !== 'Người dùng Zalo'
               ? user.fullName
               : profile.name || user.fullName,
+          phoneNumber:
+            user.phoneNumber.startsWith('ZALO_') && profile.phoneNumber
+              ? profile.phoneNumber
+              : user.phoneNumber,
+          gender:
+            user.gender === 'OTHER' && profile.gender
+              ? profile.gender
+              : user.gender,
         },
       });
 
