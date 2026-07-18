@@ -87,6 +87,9 @@ export class AiGuidedDiagnosisService {
     const previousDevice = this.cleanText(previousState.device);
     const previousSymptom = this.cleanText(previousState.symptom);
     const previousFlags = this.normalizeFlags(previousState.flags);
+    const clarificationQuestion = this.cleanText(
+      previousState.clarificationQuestion,
+    );
     const currentFlow = previousState.diagnosisFlow;
 
     if (
@@ -119,10 +122,11 @@ export class AiGuidedDiagnosisService {
     const detectedDevice = this.cleanText(
       input.intentGate?.detectedDeviceLabel || previousState.device,
     );
-    const detectedSymptom = this.cleanText(
+    const detectedSymptom = this.normalizeCanonicalSymptom(
       input.intentGate?.detectedIssueLabel ||
         input.intentGate?.detectedErrorCode ||
-        previousState.symptom,
+        previousState.symptom ||
+        null,
     );
     const deviceCategory = this.resolveDeviceCategory({
       device: detectedDevice,
@@ -137,6 +141,24 @@ export class AiGuidedDiagnosisService {
           ...previousState,
           device: previousDevice,
           flags: [...previousFlags, 'DEVICE_SWITCH_DETECTED'],
+        },
+      });
+    }
+
+    if (
+      !detectedDevice &&
+      clarificationQuestion &&
+      previousFlags.includes('MULTIPLE_DEVICES_DETECTED')
+    ) {
+      return this.buildDirectResponse({
+        text: clarificationQuestion,
+        state: {
+          ...previousState,
+          phase: 'COLLECTING',
+          contextQuestionsAsked: false,
+          contextQuestionSet: null,
+          askedFollowupKey: null,
+          flags: previousFlags,
         },
       });
     }
@@ -209,7 +231,7 @@ export class AiGuidedDiagnosisService {
     const baseState = {
       ...previousState,
       device: detectedDevice,
-      symptom: detectedSymptom || previousSymptom || null,
+      symptom: detectedSymptom || this.normalizeCanonicalSymptom(previousSymptom) || null,
       deviceCategory: this.toKnownCategory(deviceCategory),
       contextQuestionSet: questionSet,
       contextQuestionsAsked: questionSetMatches,
@@ -251,6 +273,46 @@ export class AiGuidedDiagnosisService {
       });
     }
 
+    const followupKey = this.pickFollowupKey(questionSet, mergedContextAnswers);
+    const hasMinimumContext = MINIMUM_RAG_CONTEXT_KEYS.some((key) =>
+      this.cleanText(mergedContextAnswers[key]),
+    );
+    const hasCollectedContext = Object.keys(mergedContextAnswers).length > 0;
+
+    if (!questionSetMatches && hasCollectedContext && followupKey) {
+      const followupQuestion =
+        this.getQuestionTemplate(questionSet).followups[followupKey];
+
+      if (followupQuestion) {
+        return this.buildDirectResponse({
+          text: this.prependSafetyIfNeeded(followupQuestion, safetyWarning),
+          state: {
+            ...baseState,
+            contextQuestionsAsked: true,
+            phase: 'ASKING_CONTEXT',
+            askedFollowupKey: followupKey,
+          },
+        });
+      }
+    }
+
+    if (!questionSetMatches && hasCollectedContext && hasMinimumContext) {
+      return {
+        action: 'USE_RAG',
+        nextState: {
+          ...baseState,
+          contextQuestionsAsked: true,
+          phase: 'READY_FOR_RAG',
+        },
+        ragQuery: this.buildRagQuery({
+          device: detectedDevice,
+          symptom: detectedSymptom,
+          contextAnswers: mergedContextAnswers,
+        }),
+        safetyWarning,
+      };
+    }
+
     if (!questionSetMatches) {
       return this.buildDirectResponse({
         text: this.buildQuestionSetMessage(questionSet),
@@ -263,7 +325,6 @@ export class AiGuidedDiagnosisService {
       });
     }
 
-    const followupKey = this.pickFollowupKey(questionSet, mergedContextAnswers);
     if (followupKey) {
       const followupQuestion =
         this.getQuestionTemplate(questionSet).followups[followupKey];
@@ -284,10 +345,6 @@ export class AiGuidedDiagnosisService {
         });
       }
     }
-
-    const hasMinimumContext = MINIMUM_RAG_CONTEXT_KEYS.some((key) =>
-      this.cleanText(mergedContextAnswers[key]),
-    );
 
     if (hasMinimumContext) {
       return {
@@ -517,7 +574,7 @@ export class AiGuidedDiagnosisService {
     symptom: string | null,
   ) {
     const lowerDevice = device.toLowerCase();
-    const lowerSymptom = this.cleanText(symptom).toLowerCase();
+    const lowerSymptom = this.normalizeCanonicalSymptom(symptom).toLowerCase();
 
     if (
       category === 'COOLING_HEATING' &&
@@ -672,7 +729,7 @@ export class AiGuidedDiagnosisService {
     }
 
     if (
-      /dan lanh co gio|cuc nong khong chay|cuc nong co chay|khong len nguon|van chay|hut yeu|khong xa nuoc|khong cap nuoc/u.test(
+      /dan lanh co gio|cuc nong khong chay|cuc nong co chay|khong len nguon|van chay|hut yeu|khong xa nuoc|khong cap nuoc|den sang|van co den|dia quay|van quay/u.test(
         normalized,
       )
     ) {
@@ -723,6 +780,12 @@ export class AiGuidedDiagnosisService {
     }
     if (/khong len nguon/u.test(normalized)) {
       segments.push('không lên nguồn');
+    }
+    if (/den sang|van co den/u.test(normalized)) {
+      segments.push('đèn vẫn sáng');
+    }
+    if (/dia quay|van quay/u.test(normalized)) {
+      segments.push('đĩa vẫn quay');
     }
     if (/hut yeu/u.test(normalized)) {
       segments.push('hút yếu');
@@ -787,6 +850,18 @@ export class AiGuidedDiagnosisService {
       return null;
     }
 
+    if (questionSet === 'COOKING_APPLIANCE::GENERIC') {
+      if (!this.cleanText(contextAnswers.operationStatus)) {
+        return 'operationStatus';
+      }
+
+      if (!this.cleanText(contextAnswers.safetySigns)) {
+        return 'safetySigns';
+      }
+
+      return null;
+    }
+
     if (!this.cleanText(contextAnswers.operationStatus)) {
       return 'operationStatus';
     }
@@ -836,6 +911,29 @@ export class AiGuidedDiagnosisService {
 
   private prependSafetyIfNeeded(text: string, safetyWarning?: string | null) {
     return safetyWarning ? `${safetyWarning}\n\n${text}` : text;
+  }
+
+  private normalizeCanonicalSymptom(value?: string | null) {
+    const symptom = this.cleanText(value);
+    const normalized = this.normalizeText(symptom);
+
+    if (
+      /khong lanh|khong mat|khong lam mat|phong ham ham|chang thay mat/.test(
+        normalized,
+      )
+    ) {
+      return 'Không lạnh';
+    }
+
+    if (
+      /khong nong|khong lam nong|khong lam nong thuc an|do an van nguoi|quay xong van nguoi/.test(
+        normalized,
+      )
+    ) {
+      return 'Không nóng';
+    }
+
+    return symptom;
   }
 
   private detectSafetySigns(normalizedText: string) {

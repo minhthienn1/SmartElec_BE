@@ -81,7 +81,13 @@ export class ChatsController {
       throw new ForbiddenException('Bạn không có quyền truy cập thông tin phiên chat này.');
     }
 
-    return session;
+    const aiMetadata = await this.chatsService.getLatestAiSessionMetadata(id);
+
+    return {
+      ...session,
+      ...aiMetadata,
+      bookingTriggered: session.status !== 'AI_CONSULTING',
+    };
   }
 
   // --- API DÀNH CHO THỢ (TECHNICIAN ROLE) ---

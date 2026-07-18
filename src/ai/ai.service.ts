@@ -1,3 +1,7 @@
+/* eslint-disable @typescript-eslint/no-unsafe-call */
+/* eslint-disable @typescript-eslint/no-unsafe-member-access */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
+/* eslint-disable prettier/prettier */
 import {
   BadRequestException,
   HttpException,
@@ -17,6 +21,10 @@ import { AiResponseBuilderService } from './ai-response-builder.service';
 import { AiConversationPersistenceService } from './ai-conversation-persistence.service';
 import { AiRateLimitService } from './ai-rate-limit.service';
 import { AiGeminiService } from './ai-gemini.service';
+import {
+  AiStructuredExtractorService,
+  StructuredExtractionResult,
+} from './ai-structured-extractor.service';
 
 @Injectable()
 export class AiService {
@@ -31,6 +39,7 @@ export class AiService {
     private readonly aiConversationPersistenceService: AiConversationPersistenceService,
     private readonly aiRateLimitService: AiRateLimitService,
     private readonly aiGeminiService: AiGeminiService,
+    private readonly aiStructuredExtractorService: AiStructuredExtractorService,
   ) {}
 
   async chatWithAI(
@@ -55,16 +64,34 @@ export class AiService {
 
     try {
       const intentGate = this.aiIntentGateService.analyze(originalText);
-      let effectiveState = prevState;
-      let ragQuery = originalText;
-      let safetyWarning: string | null = null;
-
-      if (intentGate.isTechnical) {
-        const guidedDiagnosis =
-          this.aiGuidedDiagnosisService.resolveNextStep({
+      const structuredExtraction = this.shouldAttemptStructuredExtraction({
+        originalText,
+        prevState,
+        intentGate,
+      })
+        ? await this.aiStructuredExtractorService.extract({
             originalText,
             prevState,
             intentGate,
+          })
+        : null;
+      const extractionMerge = this.mergeStructuredExtraction({
+        originalText,
+        prevState,
+        intentGate,
+        extraction: structuredExtraction,
+      });
+
+      let effectiveState = extractionMerge.prevState;
+      let ragQuery = originalText;
+      let safetyWarning: string | null = null;
+
+      if (extractionMerge.intentGate.isTechnical) {
+        const guidedDiagnosis =
+          this.aiGuidedDiagnosisService.resolveNextStep({
+            originalText,
+            prevState: extractionMerge.prevState,
+            intentGate: extractionMerge.intentGate,
           });
 
         if (guidedDiagnosis.action === 'DIRECT_RESPONSE') {
@@ -72,7 +99,7 @@ export class AiService {
             userId,
             sessionId,
             message: originalText,
-            prevState,
+            prevState: extractionMerge.prevState,
             parsed: guidedDiagnosis.parsedResponse,
           });
         }
@@ -82,10 +109,13 @@ export class AiService {
         safetyWarning = guidedDiagnosis.safetyWarning || null;
       }
 
-      if (intentGate.shouldReturnDirectResponse && intentGate.directResponse) {
+      if (
+        extractionMerge.intentGate.shouldReturnDirectResponse &&
+        extractionMerge.intentGate.directResponse
+      ) {
         const parsed =
           this.aiResponseBuilderService.buildDirectParsedResponse(
-            intentGate,
+            extractionMerge.intentGate,
             effectiveState,
           );
 
@@ -93,7 +123,7 @@ export class AiService {
           userId,
           sessionId,
           message: originalText,
-          prevState,
+          prevState: extractionMerge.prevState,
           parsed,
         });
       }
@@ -111,7 +141,8 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
 
       let retrievedChunks: any[] = [];
       const shouldUseRag =
-        intentGate.shouldUseRag || effectiveState?.phase === 'READY_FOR_RAG';
+        extractionMerge.intentGate.shouldUseRag ||
+        effectiveState?.phase === 'READY_FOR_RAG';
 
       if (shouldUseRag) {
         retrievedChunks = await this.retrieveRagChunks({
@@ -124,7 +155,7 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
 
         if (retrievedChunks.length === 0) {
           const parsed = this.aiResponseBuilderService.buildNoRagFallback(
-            intentGate,
+            extractionMerge.intentGate,
             effectiveState,
             ragQuery,
           );
@@ -137,7 +168,7 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
             userId,
             sessionId,
             message: originalText,
-            prevState,
+            prevState: extractionMerge.prevState,
             parsed,
           });
         }
@@ -164,7 +195,7 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
         rlhfInstruction,
         deviceContext: context.deviceContext,
         lastStateContext: context.lastStateContext,
-        intentGate,
+        intentGate: extractionMerge.intentGate,
         cleanMessage,
       });
       const cleanHistory =
@@ -224,7 +255,7 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
         userId,
         sessionId,
         message: originalText,
-        prevState,
+        prevState: effectiveState,
         parsed,
       });
     } catch (error: any) {
@@ -328,6 +359,268 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
     }
 
     return merged;
+  }
+
+  private mergeStructuredExtraction(input: {
+    originalText: string;
+    prevState: Record<string, any> | null;
+    intentGate: Record<string, any>;
+    extraction: StructuredExtractionResult | null;
+  }) {
+    if (!input.extraction) {
+      return {
+        prevState: input.prevState,
+        intentGate: input.intentGate,
+      };
+    }
+
+    const nextState = {
+      ...(input.prevState || {}),
+    };
+    const nextIntentGate = {
+      ...input.intentGate,
+    };
+
+    const currentDevice = this.cleanText(input.prevState?.device);
+    const extractedDevice = this.cleanText(input.extraction.device);
+    const extractedSymptom = this.cleanText(input.extraction.symptom);
+    const extractedCategory = this.cleanText(input.extraction.deviceCategory);
+    const hasRuleDevice = Boolean(this.cleanText(input.intentGate.detectedDeviceLabel));
+    const hasRuleSymptom = Boolean(
+      this.cleanText(
+        input.intentGate.detectedIssueLabel || input.intentGate.detectedErrorCode,
+      ),
+    );
+    const canUseExtractedDevice =
+      Boolean(extractedDevice) &&
+      this.hasEnoughConfidence(
+        input.extraction.confidence?.device,
+        input.extraction.confidence?.overall,
+      ) &&
+      (!currentDevice || currentDevice === extractedDevice);
+    const canUseExtractedSymptom =
+      Boolean(extractedSymptom) &&
+      this.hasEnoughConfidence(
+        input.extraction.confidence?.symptom,
+        input.extraction.confidence?.overall,
+      );
+    const hasMultipleDevicesUnclear =
+      input.extraction.needsClarification === true &&
+      Array.isArray(input.extraction.flags) &&
+      input.extraction.flags.includes('MULTIPLE_DEVICES_DETECTED') &&
+      !extractedDevice;
+
+    const mergedContextAnswers = this.mergeContextAnswers(
+      nextState.contextAnswers,
+      input.extraction.contextAnswers,
+    );
+    if (Object.keys(mergedContextAnswers).length > 0) {
+      nextState.contextAnswers = mergedContextAnswers;
+    }
+
+    if (Array.isArray(input.extraction.flags) && input.extraction.flags.length > 0) {
+      nextState.flags = [
+        ...new Set([...(nextState.flags || []), ...input.extraction.flags]),
+      ];
+    }
+
+    if (
+      Array.isArray(input.extraction.detectedOtherDevices) &&
+      input.extraction.detectedOtherDevices.length > 0
+    ) {
+      nextState.detectedOtherDevices = [
+        ...new Set(input.extraction.detectedOtherDevices),
+      ];
+    }
+
+    if (
+      input.extraction.needsClarification &&
+      this.cleanText(input.extraction.clarificationQuestion)
+    ) {
+      nextState.clarificationQuestion = input.extraction.clarificationQuestion?.trim();
+    }
+
+    if (hasMultipleDevicesUnclear && !currentDevice) {
+      nextIntentGate.detectedDeviceLabel = null;
+      nextIntentGate.detectedIssueLabel = null;
+      nextIntentGate.supportedDeviceCategory = 'UNKNOWN';
+      nextState.device = null;
+      nextState.deviceCategory = null;
+    }
+
+    if (
+      input.extraction.risk &&
+      (input.extraction.risk === 'RED' || !this.cleanText(nextState.risk))
+    ) {
+      nextState.risk = input.extraction.risk;
+    }
+
+    if (!hasRuleDevice && canUseExtractedDevice) {
+      nextIntentGate.detectedDeviceLabel = extractedDevice;
+    }
+
+    if (!hasRuleSymptom && canUseExtractedSymptom) {
+      nextIntentGate.detectedIssueLabel = extractedSymptom;
+    }
+
+    if (
+      !this.cleanText(nextIntentGate.supportedDeviceCategory) ||
+      nextIntentGate.supportedDeviceCategory === 'UNKNOWN'
+    ) {
+      if (extractedCategory) {
+        nextIntentGate.supportedDeviceCategory = extractedCategory;
+      }
+    }
+
+    const hasTechnicalSignals =
+      Boolean(this.cleanText(nextIntentGate.detectedDeviceLabel)) ||
+      Boolean(
+        this.cleanText(
+          nextIntentGate.detectedIssueLabel || nextIntentGate.detectedErrorCode,
+        ),
+      ) ||
+      Object.keys(mergedContextAnswers).length > 0 ||
+      input.extraction.risk === 'RED' ||
+      input.extraction.needsClarification === true ||
+      Boolean(this.cleanText(input.extraction.clarificationQuestion)) ||
+      (Array.isArray(input.extraction.flags) && input.extraction.flags.length > 0);
+
+    if (hasTechnicalSignals) {
+      nextIntentGate.isTechnical = true;
+
+      const hasSpecificIssue =
+        Boolean(this.cleanText(nextIntentGate.detectedDeviceLabel)) &&
+        Boolean(
+          this.cleanText(
+            nextIntentGate.detectedIssueLabel || nextIntentGate.detectedErrorCode,
+          ),
+        );
+
+      nextIntentGate.isTechnicalSpecific = hasSpecificIssue;
+      nextIntentGate.isTechnicalVague = !hasSpecificIssue;
+
+      if (!hasSpecificIssue && nextIntentGate.intent === 'NORMAL') {
+        nextIntentGate.intent = 'TECHNICAL_VAGUE';
+      }
+
+      if (hasSpecificIssue && nextIntentGate.intent === 'NORMAL') {
+        nextIntentGate.intent = 'TECHNICAL_SPECIFIC';
+      }
+    }
+
+    if (
+      currentDevice &&
+      extractedDevice &&
+      currentDevice !== extractedDevice &&
+      this.hasEnoughConfidence(
+        input.extraction.confidence?.device,
+        input.extraction.confidence?.overall,
+      )
+    ) {
+      nextState.detectedOtherDevices = [
+        ...new Set([...(nextState.detectedOtherDevices || []), extractedDevice]),
+      ];
+    }
+
+    return {
+      prevState: nextState,
+      intentGate: nextIntentGate,
+    };
+  }
+
+  private hasEnoughConfidence(
+    confidence?: number,
+    overallConfidence?: number,
+  ) {
+    return (
+      (typeof confidence === 'number' && confidence >= 0.65) ||
+      (typeof overallConfidence === 'number' && overallConfidence >= 0.8)
+    );
+  }
+
+  private shouldAttemptStructuredExtraction(input: {
+    originalText: string;
+    prevState: Record<string, any> | null;
+    intentGate: Record<string, any>;
+  }) {
+    if (input.intentGate?.isEmergency) {
+      return false;
+    }
+
+    const currentDevice = this.cleanText(input.prevState?.device);
+    const ruleDevice = this.cleanText(input.intentGate?.detectedDeviceLabel);
+    const ruleSymptom = this.cleanText(
+      input.intentGate?.detectedIssueLabel || input.intentGate?.detectedErrorCode,
+    );
+    const hasMultipleDeviceSignals = this.hasMultipleDeviceSignals(
+      input.originalText,
+    );
+
+    if (currentDevice && ruleDevice && currentDevice !== ruleDevice) {
+      return false;
+    }
+
+    if (ruleDevice && ruleSymptom && !hasMultipleDeviceSignals) {
+      return false;
+    }
+
+    const normalizedText = this.normalizeText(input.originalText);
+    const isLongMessage = input.originalText.trim().length >= 80;
+    const hasMultipleClauses =
+      /[,;:]|\bnhung\b|\bma\b|\bvan\b|\broi\b|\bxong\b|\bhinh nhu\b/u.test(
+        normalizedText,
+      );
+    const hasProblemSignal =
+      /\bkhong\b|\bhu\b|\bloi\b|\bvan de\b|\bmat\b|\blanh\b|\bnong\b|\bnuoc\b|\bgio\b|\bden\b|\bquay\b|\bkhong thoat\b|\bhut yeu\b/u.test(
+        normalizedText,
+      );
+
+    return (
+      hasMultipleDeviceSignals ||
+      (hasProblemSignal &&
+        (isLongMessage || hasMultipleClauses || !ruleDevice || !ruleSymptom))
+    );
+  }
+
+  private hasMultipleDeviceSignals(originalText: string) {
+    const lowerText = originalText.toLowerCase();
+    const devicePatterns = [
+      /(máy lạnh|may lanh|điều hòa|dieu hoa)/u,
+      /(máy giặt|may giat)/u,
+      /(tủ lạnh|tu lanh|cái tủ|cai tu|tủ đông|tu dong)/u,
+      /(lò vi sóng|lo vi song)/u,
+      /(máy rửa bát|may rua bat)/u,
+      /(bếp từ|bep tu)/u,
+    ];
+
+    let matches = 0;
+
+    for (const pattern of devicePatterns) {
+      if (pattern.test(lowerText)) {
+        matches += 1;
+      }
+    }
+
+    return matches >= 2;
+  }
+
+  private cleanText(value?: string | null) {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+
+  private normalizeText(value: string) {
+    return value
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   private async buildConversationContext(input: {

@@ -687,6 +687,25 @@ export class ChatsService {
     });
   }
 
+  async getLatestAiSessionMetadata(sessionId: number) {
+    const latestLog = await this.prisma.aiReasoningLog.findFirst({
+      where: { sessionId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        aiFeedback: true,
+      },
+    });
+
+    return {
+      latestAiLogId: latestLog?.id ?? null,
+      latestAiFeedback:
+        latestLog?.aiFeedback === 'LIKE' || latestLog?.aiFeedback === 'DISLIKE'
+          ? latestLog.aiFeedback
+          : null,
+    };
+  }
+
   async getMessages(sessionId: number, cursor?: number, limit: number = 20) {
     try {
       const messages = await this.prisma.message.findMany({
@@ -1083,8 +1102,15 @@ export class ChatsService {
       throw new BadRequestException('Bạn không có quyền chốt đơn này.');
     }
 
-    const updated = await this.prisma.chatSession.update({
-      where: { id: sessionId },
+    if (session.status !== JobStatus.AI_CONSULTING) {
+      return session;
+    }
+
+    const updateResult = await this.prisma.chatSession.updateMany({
+      where: {
+        id: sessionId,
+        status: JobStatus.AI_CONSULTING,
+      },
       data: {
         status: JobStatus.BROADCASTING,
         updatedAt: new Date(),
@@ -1097,6 +1123,19 @@ export class ChatsService {
       },
     });
 
+    const updated = await this.prisma.chatSession.findUnique({
+      where: { id: sessionId },
+      include: { user: true },
+    });
+
+    if (!updated) {
+      throw new NotFoundException('KhÃ´ng tÃ¬m tháº¥y phiÃªn chat!');
+    }
+
+    if (updateResult.count === 0) {
+      return updated;
+    }
+
     this.chatsGateway.emitGlobal('new_broadcast_job', {
       sessionId: updated.id,
       deviceType: updated.deviceType,
@@ -1108,9 +1147,9 @@ export class ChatsService {
       contactName: updated.contactName,
       contactPhone: updated.contactPhone,
       user: {
-        id: session.userId,
+        id: updated.userId,
         fullName: session.user?.fullName || 'Khách hàng',
-        avatarUrl: session.user?.avatarUrl,
+        avatarUrl: updated.user?.avatarUrl,
       },
     });
 
