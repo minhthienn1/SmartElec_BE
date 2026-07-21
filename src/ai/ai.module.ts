@@ -9,6 +9,7 @@ import { AiResponseBuilderService } from './ai-response-builder.service';
 import { AiConversationPersistenceService } from './ai-conversation-persistence.service';
 import { AiRateLimitService } from './ai-rate-limit.service';
 import { AiGeminiService } from './ai-gemini.service';
+import { AiStructuredExtractorService } from './ai-structured-extractor.service';
 
 import { PrismaModule } from '../prisma/prisma.module';
 import { RagModule } from '../rag/rag.module';
@@ -24,6 +25,7 @@ import { RagModule } from '../rag/rag.module';
     AiConversationPersistenceService,
     AiRateLimitService,
     AiGeminiService,
+    AiStructuredExtractorService,
   ],
   exports: [AiService],
 })

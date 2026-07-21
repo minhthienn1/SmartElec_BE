@@ -22,8 +22,8 @@ describe('AiGuidedDiagnosisService', () => {
     expect(result.parsedResponse?.state?.contextQuestionSet).toContain(
       'WATER_APPLIANCE',
     );
-    expect(result.parsedResponse?.text).toContain('1.');
-    expect(result.parsedResponse?.text).toContain('xả nước');
+    expect(result.parsedResponse?.state?.askedFollowupKey).toBe('errorCode');
+    expect(result.parsedResponse?.text).toContain('mã lỗi');
   });
 
   it('hỏi lại thiết bị nếu chỉ biết symptom mà chưa biết device', () => {
@@ -128,6 +128,46 @@ describe('AiGuidedDiagnosisService', () => {
     expect(result.nextState?.contextAnswers?.operationStatus).toContain(
       'cục nóng không chạy',
     );
+  });
+
+  it('canonical symptom điều hòa không làm mát vẫn dùng đúng question set không lạnh', () => {
+    const result = service.resolveNextStep({
+      originalText: 'máy lạnh bật lâu mà phòng vẫn hầm hầm, chẳng thấy mát',
+      prevState: null,
+      intentGate: {
+        intent: 'TECHNICAL_SPECIFIC',
+        detectedDeviceLabel: 'Điều hòa',
+        detectedIssueLabel: 'không làm mát hiệu quả',
+        supportedDeviceCategory: 'COOLING_HEATING',
+      },
+    });
+
+    expect(result.action).toBe('DIRECT_RESPONSE');
+    expect(result.parsedResponse?.state?.symptom).toBe('Không lạnh');
+    expect(result.parsedResponse?.state?.contextQuestionSet).toBe(
+      'COOLING_HEATING::AIR_CONDITIONER_NOT_COOL',
+    );
+  });
+
+  it('không hỏi lại full 3 câu nếu đã có operationStatus ngay từ lượt đầu', () => {
+    const result = service.resolveNextStep({
+      originalText: 'lò vi sóng đèn sáng, đĩa quay nhưng đồ ăn vẫn nguội',
+      prevState: null,
+      intentGate: {
+        intent: 'TECHNICAL_SPECIFIC',
+        detectedDeviceLabel: 'Lò vi sóng',
+        detectedIssueLabel: 'Không nóng',
+        supportedDeviceCategory: 'COOKING_APPLIANCE',
+      },
+    });
+
+    expect(result.action).toBe('DIRECT_RESPONSE');
+    expect(result.parsedResponse?.state?.symptom).toBe('Không nóng');
+    expect(result.parsedResponse?.state?.askedFollowupKey).toBe('safetySigns');
+    expect(result.parsedResponse?.state?.contextAnswers?.operationStatus).toContain(
+      'đèn vẫn sáng',
+    );
+    expect(result.parsedResponse?.text).not.toContain('1.');
   });
 
   it('chặn device switch ở backend deterministic flow', () => {

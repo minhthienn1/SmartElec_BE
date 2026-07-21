@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-unnecessary-type-assertion */
+/* eslint-disable prettier/prettier */
 import { Injectable, Logger } from '@nestjs/common';
 import { JobStatus, MessageType } from '@prisma/client';
 
@@ -100,6 +102,14 @@ export class AiConversationPersistenceService {
             throw new Error(`Không tìm thấy AI log với ID = ${logId}`);
         }
 
+        if (log.aiFeedback === 'LIKE' || log.aiFeedback === 'DISLIKE') {
+            return {
+                success: true,
+                feedback: log.aiFeedback,
+                alreadySubmitted: true,
+            };
+        }
+
         const scoreIncrement = feedback === 'LIKE' ? 2 : -5;
         const usefulnessEvaluation = evaluateAiUsefulness({
             prevState: this.toPlainState(log.prevState),
@@ -131,6 +141,7 @@ export class AiConversationPersistenceService {
         return {
             success: true,
             feedback,
+            alreadySubmitted: false,
         };
     }
 

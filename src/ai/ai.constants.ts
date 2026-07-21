@@ -189,3 +189,77 @@ export const responseSchema: any = {
     },
     required: ['text', 'state'],
 };
+
+export const structuredExtractorSystemPrompt = `
+Bạn là bộ Structured Extractor cho SmartElec.
+
+Nhiệm vụ:
+- Đọc tin nhắn người dùng.
+- Suy ra device, symptom, contextAnswers, risk, flags dưới dạng JSON có cấu trúc.
+- Không trả lời tự nhiên.
+- Không tự tư vấn.
+- Nếu có nhiều thiết bị, hãy cố nhận ra thiết bị chính nếu người dùng nói rõ "hỏi trước", "ưu tiên", "giờ muốn hỏi ... trước".
+- Nếu không rõ thiết bị chính, set flags gồm MULTIPLE_DEVICES_DETECTED, needsClarification = true và clarificationQuestion ngắn gọn.
+- Nếu device và symptom có vẻ mâu thuẫn, thêm flag DEVICE_SYMPTOM_CONFLICT.
+- Nếu có mùi khét, tia lửa, khói, rò/chập điện, nước gần nguồn điện thì risk = RED và đưa safetySigns.
+- Nếu không chắc, trả confidence thấp thay vì đoán chắc.
+`;
+
+export const structuredExtractionResponseSchema: any = {
+    type: SchemaType.OBJECT,
+    properties: {
+        device: { type: SchemaType.STRING, nullable: true },
+        symptom: { type: SchemaType.STRING, nullable: true },
+        deviceCategory: {
+            type: SchemaType.STRING,
+            enum: [
+                'COOLING_HEATING',
+                'WATER_APPLIANCE',
+                'COOKING_APPLIANCE',
+                'DISPLAY_AUDIO',
+                'CLEANING_APPLIANCE',
+                'AIR_WATER_TREATMENT',
+                'GENERIC_APPLIANCE',
+            ],
+            nullable: true,
+        },
+        contextAnswers: {
+            type: SchemaType.OBJECT,
+            properties: {
+                operationStatus: { type: SchemaType.STRING, nullable: true },
+                errorCode: { type: SchemaType.STRING, nullable: true },
+                abnormalSigns: { type: SchemaType.STRING, nullable: true },
+                brandModel: { type: SchemaType.STRING, nullable: true },
+                whenHappens: { type: SchemaType.STRING, nullable: true },
+                maintenanceHistory: { type: SchemaType.STRING, nullable: true },
+                environmentCondition: { type: SchemaType.STRING, nullable: true },
+                safetySigns: { type: SchemaType.STRING, nullable: true },
+                outdoorUnitStatus: { type: SchemaType.STRING, nullable: true },
+            },
+        },
+        risk: {
+            type: SchemaType.STRING,
+            enum: ['GREEN', 'YELLOW', 'RED', 'UNKNOWN'],
+            nullable: true,
+        },
+        flags: {
+            type: SchemaType.ARRAY,
+            items: { type: SchemaType.STRING },
+        },
+        detectedOtherDevices: {
+            type: SchemaType.ARRAY,
+            items: { type: SchemaType.STRING },
+        },
+        confidence: {
+            type: SchemaType.OBJECT,
+            properties: {
+                device: { type: SchemaType.NUMBER, nullable: true },
+                symptom: { type: SchemaType.NUMBER, nullable: true },
+                context: { type: SchemaType.NUMBER, nullable: true },
+                overall: { type: SchemaType.NUMBER, nullable: true },
+            },
+        },
+        needsClarification: { type: SchemaType.BOOLEAN, nullable: true },
+        clarificationQuestion: { type: SchemaType.STRING, nullable: true },
+    },
+};
