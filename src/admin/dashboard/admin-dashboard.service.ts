@@ -23,6 +23,14 @@ const ACTIVE_JOB_STATUSES = [
   'IN_PROGRESS',
 ] as const;
 
+type RevenueReportGroupBy = 'day' | 'week' | 'month';
+
+type RevenueReportQuery = {
+  from?: string;
+  to?: string;
+  groupBy?: string;
+};
+
 @Injectable()
 export class AdminDashboardService {
   constructor(
@@ -111,6 +119,157 @@ export class AdminDashboardService {
     }
 
     return 0;
+  }
+
+  private isAcceptedQuoteMessage(
+    message: NonNullable<DashboardSession['messages']>[number],
+  ) {
+    const metadata = this.asMetadata(message.metadata);
+    const amount = Number(metadata.amount);
+
+    return metadata.quoteStatus === 'ACCEPTED' && Number.isFinite(amount);
+  }
+
+  private getGroupBy(value?: string): RevenueReportGroupBy {
+    return value === 'week' || value === 'month' ? value : 'day';
+  }
+
+  private startOfDay(date: Date) {
+    const next = new Date(date);
+    next.setHours(0, 0, 0, 0);
+    return next;
+  }
+
+  private endOfDay(date: Date) {
+    const next = new Date(date);
+    next.setHours(23, 59, 59, 999);
+    return next;
+  }
+
+  private addDays(date: Date, days: number) {
+    const next = new Date(date);
+    next.setDate(next.getDate() + days);
+    return next;
+  }
+
+  private addMonths(date: Date, months: number) {
+    const next = new Date(date);
+    next.setMonth(next.getMonth() + months);
+    return next;
+  }
+
+  private toDateKey(date: Date) {
+    return date.toISOString().slice(0, 10);
+  }
+
+  private parseDate(value: string | undefined, fallback: Date) {
+    if (!value) return fallback;
+
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? fallback : parsed;
+  }
+
+  private getReportRange(query: RevenueReportQuery) {
+    const today = this.startOfDay(new Date());
+    const defaultFrom = this.addDays(today, -29);
+    const from = this.startOfDay(this.parseDate(query.from, defaultFrom));
+    const to = this.endOfDay(this.parseDate(query.to, today));
+
+    if (from.getTime() > to.getTime()) {
+      return {
+        from: this.startOfDay(to),
+        to: this.endOfDay(from),
+      };
+    }
+
+    return { from, to };
+  }
+
+  private getWeekStart(date: Date) {
+    const next = this.startOfDay(date);
+    const day = next.getDay();
+    const mondayOffset = day === 0 ? -6 : 1 - day;
+    next.setDate(next.getDate() + mondayOffset);
+    return next;
+  }
+
+  private getMonthStart(date: Date) {
+    return new Date(date.getFullYear(), date.getMonth(), 1);
+  }
+
+  private getBucketKey(date: Date, groupBy: RevenueReportGroupBy) {
+    if (groupBy === 'month') {
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    }
+
+    if (groupBy === 'week') {
+      return this.toDateKey(this.getWeekStart(date));
+    }
+
+    return this.toDateKey(date);
+  }
+
+  private getBucketLabel(date: Date, groupBy: RevenueReportGroupBy) {
+    if (groupBy === 'month') {
+      return new Intl.DateTimeFormat('vi-VN', {
+        month: '2-digit',
+        year: 'numeric',
+      }).format(date);
+    }
+
+    if (groupBy === 'week') {
+      const start = this.getWeekStart(date);
+      const end = this.addDays(start, 6);
+      const formatter = new Intl.DateTimeFormat('vi-VN', {
+        day: '2-digit',
+        month: '2-digit',
+      });
+
+      return `${formatter.format(start)} - ${formatter.format(end)}`;
+    }
+
+    return new Intl.DateTimeFormat('vi-VN', {
+      day: '2-digit',
+      month: '2-digit',
+    }).format(date);
+  }
+
+  private getNextBucketDate(date: Date, groupBy: RevenueReportGroupBy) {
+    if (groupBy === 'month') return this.addMonths(date, 1);
+    if (groupBy === 'week') return this.addDays(date, 7);
+    return this.addDays(date, 1);
+  }
+
+  private buildRevenueReportBuckets(
+    from: Date,
+    to: Date,
+    groupBy: RevenueReportGroupBy,
+  ) {
+    const start =
+      groupBy === 'month'
+        ? this.getMonthStart(from)
+        : groupBy === 'week'
+          ? this.getWeekStart(from)
+          : this.startOfDay(from);
+    const buckets: Array<{
+      key: string;
+      label: string;
+      jobs: number;
+      acceptedQuotes: number;
+      revenue: number;
+    }> = [];
+
+    for (let cursor = start; cursor.getTime() <= to.getTime(); cursor = this.getNextBucketDate(cursor, groupBy)) {
+      buckets.push({
+        key: this.getBucketKey(cursor, groupBy),
+        label: this.getBucketLabel(cursor, groupBy),
+        jobs: 0,
+        acceptedQuotes: 0,
+        revenue: 0,
+      });
+    }
+
+    return buckets;
   }
 
   /** Gom dữ liệu job và doanh thu theo 7 ngày gần nhất để dựng biểu đồ dashboard. */
@@ -474,6 +633,58 @@ export class AdminDashboardService {
         recentDislikes: dislikes.slice(0, 5).map((item) => item.userMsg),
       },
       recentActivities: this.buildRecentActivities(sessionDetails),
+    };
+  }
+
+  async getRevenueReport(query: RevenueReportQuery) {
+    const groupBy = this.getGroupBy(query.groupBy);
+    const { from, to } = this.getReportRange(query);
+    const sessionDetails = await this.getDetailedSessions();
+    const buckets = this.buildRevenueReportBuckets(from, to, groupBy);
+    const bucketMap = new Map(buckets.map((item) => [item.key, item]));
+
+    sessionDetails.forEach((session) => {
+      const createdAt = new Date(session.createdAt);
+      if (createdAt >= from && createdAt <= to) {
+        const bucket = bucketMap.get(this.getBucketKey(createdAt, groupBy));
+        if (bucket) {
+          bucket.jobs += 1;
+        }
+      }
+
+      (session.messages ?? []).forEach((message) => {
+        if (!this.isAcceptedQuoteMessage(message)) return;
+
+        const acceptedAt = new Date(message.createdAt);
+        if (acceptedAt < from || acceptedAt > to) return;
+
+        const bucket = bucketMap.get(this.getBucketKey(acceptedAt, groupBy));
+        if (!bucket) return;
+
+        bucket.acceptedQuotes += 1;
+        bucket.revenue += this.getAcceptedQuoteAmount(message);
+      });
+    });
+
+    const totalJobs = buckets.reduce((sum, item) => sum + item.jobs, 0);
+    const acceptedQuotes = buckets.reduce(
+      (sum, item) => sum + item.acceptedQuotes,
+      0,
+    );
+    const totalRevenue = buckets.reduce((sum, item) => sum + item.revenue, 0);
+
+    return {
+      from: this.toDateKey(from),
+      to: this.toDateKey(to),
+      groupBy,
+      summary: {
+        totalRevenue,
+        totalJobs,
+        acceptedQuotes,
+        averageOrderValue:
+          acceptedQuotes > 0 ? Math.round(totalRevenue / acceptedQuotes) : 0,
+      },
+      series: buckets,
     };
   }
 }
