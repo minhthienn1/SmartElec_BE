@@ -12,6 +12,7 @@ describe('ChatsService session access and device lock', () => {
       findMany: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
     message: {
       create: jest.fn(),
@@ -20,6 +21,9 @@ describe('ChatsService session access and device lock', () => {
     },
     user: {
       findUnique: jest.fn(),
+    },
+    aiReasoningLog: {
+      findFirst: jest.fn(),
     },
     $transaction: jest.fn(),
   };
@@ -183,5 +187,37 @@ describe('ChatsService session access and device lock', () => {
     await expect(
       service.assertCanAccessSession(999, 7, 'USER'),
     ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('does not create duplicate dispatches when booking is clicked again after session already left AI_CONSULTING', async () => {
+    prisma.chatSession.findUnique.mockResolvedValue({
+      id: 31,
+      userId: 7,
+      technicianId: null,
+      status: 'BROADCASTING',
+      deviceType: 'Điều hòa',
+      symptom: 'Không lạnh',
+      contactName: 'Nguyen Van A',
+      contactPhone: '0900000000',
+      address: 'HCM',
+      latitude: null,
+      longitude: null,
+      createdAt: new Date('2026-07-14T09:00:00.000Z'),
+      updatedAt: new Date('2026-07-14T09:01:00.000Z'),
+      user: {
+        id: 7,
+        fullName: 'Nguyen Van A',
+        avatarUrl: null,
+      },
+    });
+
+    const result = await service.bookTechnicianFromSession(31, 7, 'USER', {
+      contactName: 'Nguyen Van A',
+    });
+
+    expect(prisma.chatSession.updateMany).not.toHaveBeenCalled();
+    expect(jobsService.addJobDispatch).not.toHaveBeenCalled();
+    expect(chatsGateway.emitGlobal).not.toHaveBeenCalled();
+    expect(result.status).toBe('BROADCASTING');
   });
 });

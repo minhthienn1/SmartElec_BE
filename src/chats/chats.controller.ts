@@ -76,12 +76,20 @@ export class ChatsController {
 
     // Kiểm tra quyền truy cập: Chỉ khách hàng hoặc thợ của phiên này mới được xem
     // Hoặc cho phép thợ xem khi đơn đang phát sóng (BROADCASTING) để họ xem chi tiết trước khi nhận
-    const isBroadcastToTech = req.user.role === 'TECHNICIAN' && session.status === 'BROADCASTING';
-    if (session.userId !== userId && session.technicianId !== userId && !isBroadcastToTech) {
+    const normalizedRole = role?.toUpperCase();
+    const isAdmin = normalizedRole === 'ADMIN';
+    const isBroadcastToTech = normalizedRole === 'TECHNICIAN' && session.status === 'BROADCASTING';
+    if (!isAdmin && session.userId !== userId && session.technicianId !== userId && !isBroadcastToTech) {
       throw new ForbiddenException('Bạn không có quyền truy cập thông tin phiên chat này.');
     }
 
-    return session;
+    const aiMetadata = await this.chatsService.getLatestAiSessionMetadata(id);
+
+    return {
+      ...session,
+      ...aiMetadata,
+      bookingTriggered: session.status !== 'AI_CONSULTING',
+    };
   }
 
   // --- API DÀNH CHO THỢ (TECHNICIAN ROLE) ---

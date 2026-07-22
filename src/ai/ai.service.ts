@@ -1,3 +1,7 @@
+/* eslint-disable @typescript-eslint/no-unsafe-call */
+/* eslint-disable @typescript-eslint/no-unsafe-member-access */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
+/* eslint-disable prettier/prettier */
 import {
   BadRequestException,
   HttpException,
@@ -5,13 +9,8 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import {
-  GenerativeModel,
-  GoogleGenerativeAI,
-  SchemaType,
-} from '@google/generative-ai';
 import { AccessLevel, UserRole } from '@prisma/client';
+import { SchemaType } from '@google/generative-ai';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { RagRetrievalService } from '../rag/rag-retrieval.service';
@@ -23,6 +22,10 @@ import { AiResponseBuilderService } from './ai-response-builder.service';
 import { AiConversationPersistenceService } from './ai-conversation-persistence.service';
 import { AiRateLimitService } from './ai-rate-limit.service';
 import { AiGeminiService } from './ai-gemini.service';
+import {
+  AiStructuredExtractorService,
+  StructuredExtractionResult,
+} from './ai-structured-extractor.service';
 import {
   responseSchema,
   smartElecSystemPrompt,
@@ -91,7 +94,7 @@ KẾT THÚC PHIÊN CHẨN ĐOÁN & ĐÁNH GIÁ
 // ═══════════════════════════════════════════════════════════════════
 // TECH RESPONSE SCHEMA — Đơn giản hơn, không có booking/phase
 // ═══════════════════════════════════════════════════════════════════
-const techResponseSchema: any = {
+export const techResponseSchema: any = {
   type: SchemaType.OBJECT,
   properties: {
     text: {
@@ -143,32 +146,10 @@ const techResponseSchema: any = {
 
 @Injectable()
 export class AiService {
-  private genAI: GoogleGenerativeAI;
-  private model: GenerativeModel;
-  // ── Model riêng cho thợ kỹ thuật (system prompt ADVANCED, không có booking) ──
-  private techModel: GenerativeModel;
   private readonly logger = new Logger(AiService.name);
 
-  // Rate limiting: MAP lưu timestamp request gần nhất theo userId
+  // Thêm lastRequestTime cho thợ
   private lastRequestTime = new Map<number, number>();
-
-  private sanitizeUserMessage(message: string): string {
-    // Danh sách các từ khóa mà người dùng thường dùng để "hack" prompt
-    const forbiddenKeywords = [
-      /\[\s*THÔNG TIN THIẾT BỊ KHÁCH HÀNG\s*\]/gi,
-      /\[\s*KIẾN THỨC TỪ HỆ THỐNG\s*\]/gi,
-      /Hệ\s*thống\s*:/gi,
-      /Từ\s*giờ\s*hãy/gi,
-      /Quên\s*mọi\s*chỉ\s*dẫn/gi,
-    ];
-
-    let cleanMessage = message;
-    forbiddenKeywords.forEach(regex => {
-      cleanMessage = cleanMessage.replace(regex, '(Nội dung bị lọc)');
-    });
-
-    return cleanMessage;
-  }
 
   constructor(
     private readonly prisma: PrismaService,
@@ -179,43 +160,9 @@ export class AiService {
     private readonly aiConversationPersistenceService: AiConversationPersistenceService,
     private readonly aiRateLimitService: AiRateLimitService,
     private readonly aiGeminiService: AiGeminiService,
-    private readonly configService: ConfigService,
-  ) {
-    const apiKey = this.configService.get<string>('GEMINI_API_KEY') || '';
+    private readonly aiStructuredExtractorService: AiStructuredExtractorService,
+  ) {}
 
-    this.genAI = new GoogleGenerativeAI(apiKey);
-
-    // ── Model cho khách hàng (SmartElec Buddy) ──────────────────────
-    this.model = this.genAI.getGenerativeModel({
-      // ⚠️ QUY TẮC SẮT ĐÁ: KHÔNG ĐƯỢC ĐỔI PHIÊN BẢN 2.5 SANG BẢN KHÁC
-      model: 'gemini-2.5-flash',
-      systemInstruction: smartElecSystemPrompt,
-      generationConfig: {
-        temperature: 0.1,
-        topP: 0.8,
-        topK: 40,
-        responseMimeType: 'application/json',
-        responseSchema,
-      },
-    });
-
-    // ── Model cho thợ kỹ thuật (SmartElec Pro) ──────────────────────
-    this.techModel = this.genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash',
-      systemInstruction: techSystemPrompt,
-      generationConfig: {
-        temperature: 0.2, // Cao hơn chút để câu trả lời kỹ thuật linh hoạt hơn
-        topP: 0.9,
-        topK: 40,
-        responseMimeType: 'application/json',
-        responseSchema: techResponseSchema,
-      },
-    });
-  }
-
-  // ═══════════════════════════════════════════════════════════════════
-  // MAIN: Chat với AI
-  // ═══════════════════════════════════════════════════════════════════
   async chatWithAI(
     userId: number,
     message: string,
@@ -228,7 +175,7 @@ export class AiService {
 
     this.aiRateLimitService.assertRateLimit(userId);
 
-    let sessionId: number | null = sessionIdParam;
+    const sessionId: number | null = sessionIdParam;
     const persistedState =
       await this.aiConversationPersistenceService.getPreviousState(
         userId,
@@ -238,16 +185,34 @@ export class AiService {
 
     try {
       const intentGate = this.aiIntentGateService.analyze(originalText);
-      let effectiveState = prevState;
-      let ragQuery = originalText;
-      let safetyWarning: string | null = null;
-
-      if (intentGate.isTechnical) {
-        const guidedDiagnosis =
-          this.aiGuidedDiagnosisService.resolveNextStep({
+      const structuredExtraction = this.shouldAttemptStructuredExtraction({
+        originalText,
+        prevState,
+        intentGate,
+      })
+        ? await this.aiStructuredExtractorService.extract({
             originalText,
             prevState,
             intentGate,
+          })
+        : null;
+      const extractionMerge = this.mergeStructuredExtraction({
+        originalText,
+        prevState,
+        intentGate,
+        extraction: structuredExtraction,
+      });
+
+      let effectiveState = extractionMerge.prevState;
+      let ragQuery = originalText;
+      let safetyWarning: string | null = null;
+
+      if (extractionMerge.intentGate.isTechnical) {
+        const guidedDiagnosis =
+          this.aiGuidedDiagnosisService.resolveNextStep({
+            originalText,
+            prevState: extractionMerge.prevState,
+            intentGate: extractionMerge.intentGate,
           });
 
         if (guidedDiagnosis.action === 'DIRECT_RESPONSE') {
@@ -255,7 +220,7 @@ export class AiService {
             userId,
             sessionId,
             message: originalText,
-            prevState,
+            prevState: extractionMerge.prevState,
             parsed: guidedDiagnosis.parsedResponse,
           });
         }
@@ -265,10 +230,13 @@ export class AiService {
         safetyWarning = guidedDiagnosis.safetyWarning || null;
       }
 
-      if (intentGate.shouldReturnDirectResponse && intentGate.directResponse) {
+      if (
+        extractionMerge.intentGate.shouldReturnDirectResponse &&
+        extractionMerge.intentGate.directResponse
+      ) {
         const parsed =
           this.aiResponseBuilderService.buildDirectParsedResponse(
-            intentGate,
+            extractionMerge.intentGate,
             effectiveState,
           );
 
@@ -276,7 +244,7 @@ export class AiService {
           userId,
           sessionId,
           message: originalText,
-          prevState,
+          prevState: extractionMerge.prevState,
           parsed,
         });
       }
@@ -294,7 +262,8 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
 
       let retrievedChunks: any[] = [];
       const shouldUseRag =
-        intentGate.shouldUseRag || effectiveState?.phase === 'READY_FOR_RAG';
+        extractionMerge.intentGate.shouldUseRag ||
+        effectiveState?.phase === 'READY_FOR_RAG';
 
       if (shouldUseRag) {
         retrievedChunks = await this.retrieveRagChunks({
@@ -307,7 +276,7 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
 
         if (retrievedChunks.length === 0) {
           const parsed = this.aiResponseBuilderService.buildNoRagFallback(
-            intentGate,
+            extractionMerge.intentGate,
             effectiveState,
             ragQuery,
           );
@@ -320,7 +289,7 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
             userId,
             sessionId,
             message: originalText,
-            prevState,
+            prevState: extractionMerge.prevState,
             parsed,
           });
         }
@@ -347,7 +316,7 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
         rlhfInstruction,
         deviceContext: context.deviceContext,
         lastStateContext: context.lastStateContext,
-        intentGate,
+        intentGate: extractionMerge.intentGate,
         cleanMessage,
       });
       const cleanHistory =
@@ -407,7 +376,7 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
         userId,
         sessionId,
         message: originalText,
-        prevState,
+        prevState: effectiveState,
         parsed,
       });
     } catch (error: any) {
@@ -497,7 +466,6 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
       previousValue && typeof previousValue === 'object' && !Array.isArray(previousValue)
         ? (previousValue as Record<string, unknown>)
         : {};
-
     const next =
       nextValue && typeof nextValue === 'object' && !Array.isArray(nextValue)
         ? (nextValue as Record<string, unknown>)
@@ -506,22 +474,274 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
     const merged: Record<string, unknown> = { ...previous };
 
     for (const [key, value] of Object.entries(next)) {
-      if (typeof value === 'string') {
-        const trimmedValue = value.trim();
-
-        if (trimmedValue) {
-          merged[key] = trimmedValue;
-        }
-
-        continue;
-      }
-
-      if (value !== null && value !== undefined && value !== '') {
-        merged[key] = value;
+      if (typeof value === 'string' && value.trim()) {
+        merged[key] = value.trim();
       }
     }
 
     return merged;
+  }
+
+  private mergeStructuredExtraction(input: {
+    originalText: string;
+    prevState: Record<string, any> | null;
+    intentGate: Record<string, any>;
+    extraction: StructuredExtractionResult | null;
+  }) {
+    if (!input.extraction) {
+      return {
+        prevState: input.prevState,
+        intentGate: input.intentGate,
+      };
+    }
+
+    const nextState = {
+      ...(input.prevState || {}),
+    };
+    const nextIntentGate = {
+      ...input.intentGate,
+    };
+
+    const currentDevice = this.cleanText(input.prevState?.device);
+    const extractedDevice = this.cleanText(input.extraction.device);
+    const extractedSymptom = this.cleanText(input.extraction.symptom);
+    const extractedCategory = this.cleanText(input.extraction.deviceCategory);
+    const hasRuleDevice = Boolean(this.cleanText(input.intentGate.detectedDeviceLabel));
+    const hasRuleSymptom = Boolean(
+      this.cleanText(
+        input.intentGate.detectedIssueLabel || input.intentGate.detectedErrorCode,
+      ),
+    );
+    const canUseExtractedDevice =
+      Boolean(extractedDevice) &&
+      this.hasEnoughConfidence(
+        input.extraction.confidence?.device,
+        input.extraction.confidence?.overall,
+      ) &&
+      (!currentDevice || currentDevice === extractedDevice);
+    const canUseExtractedSymptom =
+      Boolean(extractedSymptom) &&
+      this.hasEnoughConfidence(
+        input.extraction.confidence?.symptom,
+        input.extraction.confidence?.overall,
+      );
+    const hasMultipleDevicesUnclear =
+      input.extraction.needsClarification === true &&
+      Array.isArray(input.extraction.flags) &&
+      input.extraction.flags.includes('MULTIPLE_DEVICES_DETECTED') &&
+      !extractedDevice;
+
+    const mergedContextAnswers = this.mergeContextAnswers(
+      nextState.contextAnswers,
+      input.extraction.contextAnswers,
+    );
+    if (Object.keys(mergedContextAnswers).length > 0) {
+      nextState.contextAnswers = mergedContextAnswers;
+    }
+
+    if (Array.isArray(input.extraction.flags) && input.extraction.flags.length > 0) {
+      nextState.flags = [
+        ...new Set([...(nextState.flags || []), ...input.extraction.flags]),
+      ];
+    }
+
+    if (
+      Array.isArray(input.extraction.detectedOtherDevices) &&
+      input.extraction.detectedOtherDevices.length > 0
+    ) {
+      nextState.detectedOtherDevices = [
+        ...new Set(input.extraction.detectedOtherDevices),
+      ];
+    }
+
+    if (
+      input.extraction.needsClarification &&
+      this.cleanText(input.extraction.clarificationQuestion)
+    ) {
+      nextState.clarificationQuestion = input.extraction.clarificationQuestion?.trim();
+    }
+
+    if (hasMultipleDevicesUnclear && !currentDevice) {
+      nextIntentGate.detectedDeviceLabel = null;
+      nextIntentGate.detectedIssueLabel = null;
+      nextIntentGate.supportedDeviceCategory = 'UNKNOWN';
+      nextState.device = null;
+      nextState.deviceCategory = null;
+    }
+
+    if (
+      input.extraction.risk &&
+      (input.extraction.risk === 'RED' || !this.cleanText(nextState.risk))
+    ) {
+      nextState.risk = input.extraction.risk;
+    }
+
+    if (!hasRuleDevice && canUseExtractedDevice) {
+      nextIntentGate.detectedDeviceLabel = extractedDevice;
+    }
+
+    if (!hasRuleSymptom && canUseExtractedSymptom) {
+      nextIntentGate.detectedIssueLabel = extractedSymptom;
+    }
+
+    if (
+      !this.cleanText(nextIntentGate.supportedDeviceCategory) ||
+      nextIntentGate.supportedDeviceCategory === 'UNKNOWN'
+    ) {
+      if (extractedCategory) {
+        nextIntentGate.supportedDeviceCategory = extractedCategory;
+      }
+    }
+
+    const hasTechnicalSignals =
+      Boolean(this.cleanText(nextIntentGate.detectedDeviceLabel)) ||
+      Boolean(
+        this.cleanText(
+          nextIntentGate.detectedIssueLabel || nextIntentGate.detectedErrorCode,
+        ),
+      ) ||
+      Object.keys(mergedContextAnswers).length > 0 ||
+      input.extraction.risk === 'RED' ||
+      input.extraction.needsClarification === true ||
+      Boolean(this.cleanText(input.extraction.clarificationQuestion)) ||
+      (Array.isArray(input.extraction.flags) && input.extraction.flags.length > 0);
+
+    if (hasTechnicalSignals) {
+      nextIntentGate.isTechnical = true;
+
+      const hasSpecificIssue =
+        Boolean(this.cleanText(nextIntentGate.detectedDeviceLabel)) &&
+        Boolean(
+          this.cleanText(
+            nextIntentGate.detectedIssueLabel || nextIntentGate.detectedErrorCode,
+          ),
+        );
+
+      nextIntentGate.isTechnicalSpecific = hasSpecificIssue;
+      nextIntentGate.isTechnicalVague = !hasSpecificIssue;
+
+      if (!hasSpecificIssue && nextIntentGate.intent === 'NORMAL') {
+        nextIntentGate.intent = 'TECHNICAL_VAGUE';
+      }
+
+      if (hasSpecificIssue && nextIntentGate.intent === 'NORMAL') {
+        nextIntentGate.intent = 'TECHNICAL_SPECIFIC';
+      }
+    }
+
+    if (
+      currentDevice &&
+      extractedDevice &&
+      currentDevice !== extractedDevice &&
+      this.hasEnoughConfidence(
+        input.extraction.confidence?.device,
+        input.extraction.confidence?.overall,
+      )
+    ) {
+      nextState.detectedOtherDevices = [
+        ...new Set([...(nextState.detectedOtherDevices || []), extractedDevice]),
+      ];
+    }
+
+    return {
+      prevState: nextState,
+      intentGate: nextIntentGate,
+    };
+  }
+
+  private hasEnoughConfidence(
+    confidence?: number,
+    overallConfidence?: number,
+  ) {
+    return (
+      (typeof confidence === 'number' && confidence >= 0.65) ||
+      (typeof overallConfidence === 'number' && overallConfidence >= 0.8)
+    );
+  }
+
+  private shouldAttemptStructuredExtraction(input: {
+    originalText: string;
+    prevState: Record<string, any> | null;
+    intentGate: Record<string, any>;
+  }) {
+    if (input.intentGate?.isEmergency) {
+      return false;
+    }
+
+    const currentDevice = this.cleanText(input.prevState?.device);
+    const ruleDevice = this.cleanText(input.intentGate?.detectedDeviceLabel);
+    const ruleSymptom = this.cleanText(
+      input.intentGate?.detectedIssueLabel || input.intentGate?.detectedErrorCode,
+    );
+    const hasMultipleDeviceSignals = this.hasMultipleDeviceSignals(
+      input.originalText,
+    );
+
+    if (currentDevice && ruleDevice && currentDevice !== ruleDevice) {
+      return false;
+    }
+
+    if (ruleDevice && ruleSymptom && !hasMultipleDeviceSignals) {
+      return false;
+    }
+
+    const normalizedText = this.normalizeText(input.originalText);
+    const isLongMessage = input.originalText.trim().length >= 80;
+    const hasMultipleClauses =
+      /[,;:]|\bnhung\b|\bma\b|\bvan\b|\broi\b|\bxong\b|\bhinh nhu\b/u.test(
+        normalizedText,
+      );
+    const hasProblemSignal =
+      /\bkhong\b|\bhu\b|\bloi\b|\bvan de\b|\bmat\b|\blanh\b|\bnong\b|\bnuoc\b|\bgio\b|\bden\b|\bquay\b|\bkhong thoat\b|\bhut yeu\b/u.test(
+        normalizedText,
+      );
+
+    return (
+      hasMultipleDeviceSignals ||
+      (hasProblemSignal &&
+        (isLongMessage || hasMultipleClauses || !ruleDevice || !ruleSymptom))
+    );
+  }
+
+  private hasMultipleDeviceSignals(originalText: string) {
+    const lowerText = originalText.toLowerCase();
+    const devicePatterns = [
+      /(máy lạnh|may lanh|điều hòa|dieu hoa)/u,
+      /(máy giặt|may giat)/u,
+      /(tủ lạnh|tu lanh|cái tủ|cai tu|tủ đông|tu dong)/u,
+      /(lò vi sóng|lo vi song)/u,
+      /(máy rửa bát|may rua bat)/u,
+      /(bếp từ|bep tu)/u,
+    ];
+
+    let matches = 0;
+
+    for (const pattern of devicePatterns) {
+      if (pattern.test(lowerText)) {
+        matches += 1;
+      }
+    }
+
+    return matches >= 2;
+  }
+
+  private cleanText(value?: string | null) {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+
+  private normalizeText(value: string) {
+    return value
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   private async buildConversationContext(input: {
@@ -542,22 +762,22 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
 
     const sessionContext = input.sessionId
       ? await this.prisma.chatSession.findFirst({
-        where: {
-          id: input.sessionId,
-          userId: input.userId,
-        },
-        select: {
-          status: true,
-          deviceType: true,
-          device: {
-            select: {
-              category: true,
-              brandName: true,
-              modelCode: true,
+          where: {
+            id: input.sessionId,
+            userId: input.userId,
+          },
+          select: {
+            status: true,
+            deviceType: true,
+            device: {
+              select: {
+                category: true,
+                brandName: true,
+                modelCode: true,
+              },
             },
           },
-        },
-      })
+        })
       : null;
 
     if (sessionContext && sessionContext.status !== 'AI_CONSULTING') {
@@ -569,10 +789,10 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
     const deviceContext =
       devices.length > 0
         ? `\n[THÔNG TIN THIẾT BỊ KHÁCH HÀNG]: Khách hàng có: ${devices
-          .map((device) =>
-            [device.brandName, device.category].filter(Boolean).join(' '),
-          )
-          .join(', ')}`
+            .map((device) =>
+              [device.brandName, device.category].filter(Boolean).join(' '),
+            )
+            .join(', ')}`
         : '\n[THÔNG TIN THIẾT BỊ KHÁCH HÀNG]: Chưa có thiết bị nào được lưu trong hồ sơ.';
 
     const user = await this.prisma.user.findUnique({
@@ -705,10 +925,9 @@ Không tìm thấy tài liệu nội bộ phù hợp cho câu hỏi này. Không
 
     const negativeText = negativeExample
       ? `   [Xấu] Khách: "${negativeExample.userMsg}"\n   AI: "${(
-        negativeExample.aiResponse ?? ''
-      ).substring(0, 300)}..."`
+          negativeExample.aiResponse ?? ''
+        ).substring(0, 300)}..."`
       : '';
-
     return `
 [VÍ DỤ TRẢ LỜI XUẤT SẮC ĐỂ CHỐT ĐƠN]:
 ${goldenText || '   (Chưa có)'}
@@ -717,7 +936,6 @@ ${goldenText || '   (Chưa có)'}
 ${negativeText || '   (Chưa có)'}
 `;
   }
-
 
   async chatWithAI_Tech(
     userId: number,
@@ -732,7 +950,7 @@ ${negativeText || '   (Chưa có)'}
       );
     }
 
-    // ── RATE LIMIT (dùng chung map với key userId nhưng không chặn cross-role) ──
+    // ── RATE LIMIT ──
     const now = Date.now();
     const lastTime = this.lastRequestTime.get(userId) || 0;
     if (now - lastTime < 2000) {
@@ -817,7 +1035,7 @@ ${docsText}
       }
 
       // ── 2. BUILD PROMPT & GỌI GEMINI ────────────────────────────────
-      const cleanMessage = this.sanitizeUserMessage(message);
+      const cleanMessage = this.aiResponseBuilderService.sanitizeUserMessage(message);
 
       const techPrompt = `
 ${ragContext}
@@ -848,9 +1066,12 @@ Hãy phân tích và trả lời với tư cách SmartElec Pro — trợ lý k�
         cleanHistory.pop();
       }
 
-      const chat = this.techModel.startChat({ history: cleanHistory });
-      const result = await chat.sendMessage(parts);
-      const rawText = result.response.text();
+      // ── GỌI QUA AIGEMINISERVICE ──
+      const rawText = await this.aiGeminiService.generateRawResponse({
+        userPrompt: techPrompt,
+        history: cleanHistory as any,
+        imageBase64: imageBase64
+      });
 
       // ── 3. PARSE JSON ───────────────────────────────────────────────
       let parsed: any;
@@ -930,7 +1151,6 @@ Hãy phân tích và trả lời với tư cách SmartElec Pro — trợ lý k�
   // ═══════════════════════════════════════════════════════════════════
   // PRIVATE HELPERS
   // ═══════════════════════════════════════════════════════════════════
-
 
   private async saveReasoningLog(
     userId: number,

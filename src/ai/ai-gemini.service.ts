@@ -39,6 +39,24 @@ export class AiGeminiService {
         history?: any[];
         imageBase64?: string;
     }): Promise<string> {
+        return this.generateStructuredJson({
+            systemInstruction: smartElecSystemPrompt,
+            responseSchema,
+            userPrompt: input.userPrompt,
+            history: input.history,
+            imageBase64: input.imageBase64,
+            model: 'gemini-2.5-flash',
+        });
+    }
+
+    async generateStructuredJson(input: {
+        systemInstruction: string;
+        responseSchema: any;
+        userPrompt: string;
+        history?: any[];
+        imageBase64?: string;
+        model?: string;
+    }): Promise<string> {
         const parts: any[] = [{ text: input.userPrompt }];
 
         if (input.imageBase64) {
@@ -50,7 +68,19 @@ export class AiGeminiService {
             });
         }
 
-        const chat = this.model.startChat({
+        const model = this.genAI.getGenerativeModel({
+            model: input.model || 'gemini-2.5-flash',
+            systemInstruction: input.systemInstruction,
+            generationConfig: {
+                temperature: 0.1,
+                topP: 0.8,
+                topK: 40,
+                responseMimeType: 'application/json',
+                responseSchema: input.responseSchema,
+            },
+        });
+
+        const chat = model.startChat({
             history: input.history || [],
         });
 
