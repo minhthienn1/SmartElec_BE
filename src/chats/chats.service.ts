@@ -286,6 +286,8 @@ export class ChatsService {
   async getAccessibleUserSessions(userId: number, role?: string) {
     const normalizedRole = role?.toUpperCase();
 
+    const hiddenStatuses = [JobStatus.COMPLETED, JobStatus.DONE, JobStatus.CANCELLED];
+
     const sessions = await this.prisma.chatSession.findMany({
       where:
         normalizedRole === UserRole.ADMIN
@@ -293,7 +295,7 @@ export class ChatsService {
           : normalizedRole === UserRole.TECHNICIAN
             ? {
               OR: [
-                { technicianId: userId },
+                { technicianId: userId, status: { notIn: hiddenStatuses } },
                 {
                   status: JobStatus.BROADCASTING,
                   assignmentHistories: {
@@ -305,7 +307,7 @@ export class ChatsService {
                 },
               ],
             }
-            : { userId },
+            : { userId, status: { notIn: hiddenStatuses } },
       orderBy: { updatedAt: 'desc' },
       include: {
         user: {
