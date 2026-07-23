@@ -2,6 +2,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
@@ -139,6 +140,25 @@ async function bootstrap(): Promise<void> {
   );
 
   const port = Number(process.env.PORT) || 3000;
+
+  // --- Swagger / OpenAPI setup available at /swagger ---
+  try {
+    const swaggerConfig = new DocumentBuilder()
+      .setTitle('SmartElec API')
+      .setDescription('SmartElec backend API docs. Includes a small "Dev Review" endpoint that lists recently modified files.')
+      .setVersion('1.0')
+      .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'Authorization')
+      .build();
+
+    const document = SwaggerModule.createDocument(app, swaggerConfig);
+    SwaggerModule.setup('swagger', app, document, {
+      swaggerOptions: { persistAuthorization: true },
+    });
+    console.log('Swagger UI available at: /swagger');
+  } catch (err) {
+    // Do not fail bootstrap when swagger setup fails for any reason
+    console.warn('Không thể khởi tạo Swagger UI:', err);
+  }
 
   await app.listen(port, '0.0.0.0');
 
