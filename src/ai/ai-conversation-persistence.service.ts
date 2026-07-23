@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unnecessary-type-assertion */
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger } from '@nestjs/common';
-import { JobStatus, MessageType } from '@prisma/client';
+import { JobStatus, MessageType, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { evaluateAiUsefulness } from './ai-usefulness-scoring';
@@ -380,6 +380,7 @@ export class AiConversationPersistenceService {
                 senderId?: number | null;
                 type: MessageType;
                 content: string;
+                metadata?: Prisma.JsonValue | null;
             }> = [];
 
             if (userMessage) {
@@ -388,6 +389,7 @@ export class AiConversationPersistenceService {
                     senderId: input.userId,
                     type: MessageType.TEXT,
                     content: userMessage,
+                    metadata: { aiTranscript: true },
                 });
             }
 
@@ -397,6 +399,7 @@ export class AiConversationPersistenceService {
                     senderId: null,
                     type: MessageType.TEXT,
                     content: aiResponse,
+                    metadata: { aiTranscript: true },
                 });
             }
 
