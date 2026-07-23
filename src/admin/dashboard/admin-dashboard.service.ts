@@ -1,8 +1,10 @@
 import { Injectable } from '@nestjs/common';
+import { QuoteStatus } from '@prisma/client';
 import { AdminAccountsService } from '../accounts/admin-accounts.service';
 import { AdminAiReasoningLogsService } from '../ai-reasoning-logs/admin-ai-reasoning-logs.service';
 import { AdminChatsService } from '../chats/admin-chats.service';
 import { AdminTechniciansService } from '../technicians/admin-technicians.service';
+import { PrismaService } from '../../prisma/prisma.service';
 
 type DashboardSession = NonNullable<
   Awaited<ReturnType<AdminChatsService['getChatById']>>
@@ -38,6 +40,7 @@ export class AdminDashboardService {
     private readonly adminAiReasoningLogsService: AdminAiReasoningLogsService,
     private readonly adminChatsService: AdminChatsService,
     private readonly adminTechniciansService: AdminTechniciansService,
+    private readonly prisma: PrismaService,
   ) {}
 
   /** Ép metadata của message về object để đọc các trường quote trong dashboard an toàn hơn. */
@@ -639,31 +642,107 @@ export class AdminDashboardService {
   async getRevenueReport(query: RevenueReportQuery) {
     const groupBy = this.getGroupBy(query.groupBy);
     const { from, to } = this.getReportRange(query);
-    const sessionDetails = await this.getDetailedSessions();
     const buckets = this.buildRevenueReportBuckets(from, to, groupBy);
     const bucketMap = new Map(buckets.map((item) => [item.key, item]));
 
-    sessionDetails.forEach((session) => {
+    const [sessions, acceptedQuoteRows] = await Promise.all([
+      this.prisma.chatSession.findMany({
+        where: {
+          createdAt: {
+            gte: from,
+            lte: to,
+          },
+        },
+        select: {
+          id: true,
+          createdAt: true,
+          updatedAt: true,
+          status: true,
+          deviceType: true,
+          symptom: true,
+          user: {
+            select: {
+              fullName: true,
+              phoneNumber: true,
+            },
+          },
+          technician: {
+            select: {
+              fullName: true,
+              phoneNumber: true,
+            },
+          },
+          quotes: {
+            where: {
+              status: QuoteStatus.ACCEPTED,
+            },
+            select: {
+              id: true,
+              title: true,
+              amount: true,
+              acceptedAt: true,
+            },
+            orderBy: {
+              acceptedAt: 'desc',
+            },
+          },
+        },
+      }),
+      this.prisma.quote.findMany({
+        where: {
+          status: QuoteStatus.ACCEPTED,
+          acceptedAt: {
+            gte: from,
+            lte: to,
+          },
+        },
+        select: {
+          id: true,
+          title: true,
+          amount: true,
+          createdAt: true,
+          acceptedAt: true,
+          session: {
+            select: {
+              id: true,
+              status: true,
+              deviceType: true,
+              symptom: true,
+              user: {
+                select: {
+                  fullName: true,
+                  phoneNumber: true,
+                },
+              },
+              technician: {
+                select: {
+                  fullName: true,
+                  phoneNumber: true,
+                },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    sessions.forEach((session) => {
       const createdAt = new Date(session.createdAt);
-      if (createdAt >= from && createdAt <= to) {
-        const bucket = bucketMap.get(this.getBucketKey(createdAt, groupBy));
-        if (bucket) {
-          bucket.jobs += 1;
-        }
+      const bucket = bucketMap.get(this.getBucketKey(createdAt, groupBy));
+      if (bucket) {
+        bucket.jobs += 1;
       }
+    });
 
-      (session.messages ?? []).forEach((message) => {
-        if (!this.isAcceptedQuoteMessage(message)) return;
+    acceptedQuoteRows.forEach((quote) => {
+      if (!quote.acceptedAt) return;
 
-        const acceptedAt = new Date(message.createdAt);
-        if (acceptedAt < from || acceptedAt > to) return;
+      const acceptedAt = new Date(quote.acceptedAt);
+      const bucket = bucketMap.get(this.getBucketKey(acceptedAt, groupBy));
+      if (!bucket) return;
 
-        const bucket = bucketMap.get(this.getBucketKey(acceptedAt, groupBy));
-        if (!bucket) return;
-
-        bucket.acceptedQuotes += 1;
-        bucket.revenue += this.getAcceptedQuoteAmount(message);
-      });
+      bucket.acceptedQuotes += 1;
+      bucket.revenue += quote.amount;
     });
 
     const totalJobs = buckets.reduce((sum, item) => sum + item.jobs, 0);
@@ -685,6 +764,37 @@ export class AdminDashboardService {
           acceptedQuotes > 0 ? Math.round(totalRevenue / acceptedQuotes) : 0,
       },
       series: buckets,
+      details: sessions
+        .slice()
+        .sort(
+          (left, right) =>
+            right.createdAt.getTime() - left.createdAt.getTime(),
+        )
+        .map((session) => {
+          const acceptedRevenue = session.quotes.reduce(
+            (sum, quote) => sum + quote.amount,
+            0,
+          );
+          const latestQuote = session.quotes[0] ?? null;
+
+          return {
+            sessionId: session.id,
+            sessionStatus: session.status,
+            deviceType: session.deviceType,
+            symptom: session.symptom,
+            customerName: session.user.fullName,
+            customerPhone: session.user.phoneNumber,
+            technicianName: session.technician?.fullName ?? null,
+            technicianPhone: session.technician?.phoneNumber ?? null,
+            createdAt: session.createdAt.toISOString(),
+            updatedAt: session.updatedAt.toISOString(),
+            acceptedQuoteCount: session.quotes.length,
+            acceptedRevenue,
+            latestQuoteId: latestQuote?.id ?? null,
+            latestQuoteTitle: latestQuote?.title ?? null,
+            latestAcceptedAt: latestQuote?.acceptedAt?.toISOString() ?? null,
+          };
+        }),
     };
   }
 }
