@@ -14,7 +14,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { CreateQuoteDto } from './dto/create-quote.dto';
-import { JobStatus, MessageType, UserRole } from '@prisma/client';
+import { JobStatus, MessageType, SessionType, UserRole } from '@prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ChatsGateway } from './chats.gateway';
 import { JobsService } from '../jobs/jobs.service';
@@ -692,7 +692,16 @@ export class ChatsService {
 
   async getMessages(sessionId: number, cursor?: number, limit: number = 20) {
     try {
-      const messages = await this.prisma.message.findMany({
+      const session = await this.prisma.chatSession.findUnique({
+        where: { id: sessionId },
+        select: { status: true, sessionType: true },
+      });
+
+      if (!session) {
+        throw new NotFoundException('Phiên chat không tồn tại.');
+      }
+
+      let messages = await this.prisma.message.findMany({
         where: {
           sessionId,
           isDeleted: false,
@@ -711,6 +720,14 @@ export class ChatsService {
           },
         },
       });
+
+      if (session.status !== JobStatus.AI_CONSULTING) {
+        messages = messages.filter((message) => {
+          const metadata = message.metadata as Record<string, any> | null;
+          return metadata?.aiTranscript !== true;
+        });
+      }
+
       if (messages.length > 0) {
         return messages.reverse();
       }
@@ -719,8 +736,19 @@ export class ChatsService {
         return [];
       }
 
+      if (session.status !== JobStatus.AI_CONSULTING) {
+        return [];
+      }
+
+      if (session.sessionType !== SessionType.AI_DIAGNOSIS) {
+        return [];
+      }
+
       return this.buildMessagesFromAiLogs(sessionId, limit);
     } catch (error: any) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
       throw new InternalServerErrorException(
         'Lỗi khi tải tin nhắn: ' + error.message,
       );
