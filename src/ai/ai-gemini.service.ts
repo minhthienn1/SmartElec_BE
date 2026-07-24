@@ -56,6 +56,8 @@ export class AiGeminiService {
         history?: any[];
         imageBase64?: string;
         model?: string;
+        temperature?: number;
+        topP?: number;
     }): Promise<string> {
         const parts: any[] = [{ text: input.userPrompt }];
 
@@ -72,8 +74,8 @@ export class AiGeminiService {
             model: input.model || 'gemini-2.5-flash',
             systemInstruction: input.systemInstruction,
             generationConfig: {
-                temperature: 0.1,
-                topP: 0.8,
+                temperature: input.temperature ?? 0.1,
+                topP: input.topP ?? 0.8,
                 topK: 40,
                 responseMimeType: 'application/json',
                 responseSchema: input.responseSchema,
