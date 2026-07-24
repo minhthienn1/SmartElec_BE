@@ -9,39 +9,39 @@ datasource db {
 }
 
 model User {
-  id                   Int                        @id @default(autoincrement())
-  phoneNumber          String                     @unique
-  password             String
-  fullName             String?
-  email                String?                    @unique
-  avatarUrl            String?
-  address              String?
-  role                 UserRole                   @default(USER)
-  isVerified           Boolean                    @default(false)
-  isActive             Boolean                    @default(true)
-  lastLogin            DateTime?
-  createdAt            DateTime                   @default(now())
-  updatedAt            DateTime                   @updatedAt
-  gender               Gender
-  averageRating        Float                      @default(0.0)
-  fcmToken             String?
-  googleId             String?                    @unique
-  isOnline             Boolean                    @default(false)
-  latitude             Float?
-  longitude            Float?
-  needsPassword        Boolean                    @default(false)
-  totalReviews         Int                        @default(0)
-  zaloId               String?                    @unique
-  technicianSessions   ChatSession[]              @relation("TechnicianSessions")
-  chatSessions         ChatSession[]              @relation("CustomerSessions")
-  devices              Device[]
-  sentMessages         Message[]                  @relation("SentMessages")
-  quotesCreated        Quote[]
-  uploadedRagDocuments RagDocument[]
-  reviewsReceived      Review[]                   @relation("TechnicianReviews")
-  reviewsGiven         Review[]                   @relation("UserReviews")
-  assignmentHistories  SessionAssignmentHistory[]
-  reviewedReasoningLogs AiReasoningLog[]         @relation("AiReasoningLogReviewer")
+  id                    Int                        @id @default(autoincrement())
+  phoneNumber           String                     @unique
+  password              String
+  fullName              String?
+  email                 String?                    @unique
+  avatarUrl             String?
+  address               String?
+  role                  UserRole                   @default(USER)
+  isVerified            Boolean                    @default(false)
+  isActive              Boolean                    @default(true)
+  lastLogin             DateTime?
+  createdAt             DateTime                   @default(now())
+  updatedAt             DateTime                   @updatedAt
+  gender                Gender
+  averageRating         Float                      @default(0.0)
+  fcmToken              String?
+  googleId              String?                    @unique
+  isOnline              Boolean                    @default(false)
+  latitude              Float?
+  longitude             Float?
+  needsPassword         Boolean                    @default(false)
+  totalReviews          Int                        @default(0)
+  zaloId                String?                    @unique
+  technicianSessions    ChatSession[]              @relation("TechnicianSessions")
+  chatSessions          ChatSession[]              @relation("CustomerSessions")
+  devices               Device[]
+  sentMessages          Message[]                  @relation("SentMessages")
+  quotesCreated         Quote[]
+  uploadedRagDocuments  RagDocument[]
+  reviewsReceived       Review[]                   @relation("TechnicianReviews")
+  reviewsGiven          Review[]                   @relation("UserReviews")
+  assignmentHistories   SessionAssignmentHistory[]
+  reviewedReasoningLogs AiReasoningLog[]           @relation("AiReasoningLogReviewer")
 
   @@map("users")
 }
@@ -66,27 +66,28 @@ model Device {
 }
 
 model ChatSession {
-  id                  Int                        @id @default(autoincrement())
-  deviceType          String?
-  brand               String?
-  modelCode           String?
-  symptom             String?
-  aiSummary           String?
-  isDangerous         Boolean                    @default(false)
-  userId              Int
-  createdAt           DateTime                   @default(now())
-  updatedAt           DateTime                   @updatedAt
-  deviceId            Int?
-  address             String?
-  contactName         String?
-  contactPhone        String?
-  isHiddenByCustomer  Boolean                    @default(false)
-  latitude            Float?
-  longitude           Float?
-  status              JobStatus                  @default(AI_CONSULTING)
-  technicianId        Int?
-  version             Int                        @default(1)
-  sessionType         SessionType                @default(AI_DIAGNOSIS)
+  id                 Int         @id @default(autoincrement())
+  deviceType         String?
+  brand              String?
+  modelCode          String?
+  symptom            String?
+  aiSummary          String?
+  isDangerous        Boolean     @default(false)
+  userId             Int
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+  deviceId           Int?
+  address            String?
+  contactName        String?
+  contactPhone       String?
+  isHiddenByCustomer Boolean     @default(false)
+  latitude           Float?
+  longitude          Float?
+  status             JobStatus   @default(AI_CONSULTING)
+  technicianId       Int?
+  version            Int         @default(1)
+  sessionType        SessionType @default(AI_DIAGNOSIS)
+
   device              Device?                    @relation(fields: [deviceId], references: [id])
   technician          User?                      @relation("TechnicianSessions", fields: [technicianId], references: [id])
   user                User                       @relation("CustomerSessions", fields: [userId], references: [id], onDelete: Cascade)
@@ -94,6 +95,8 @@ model ChatSession {
   quotes              Quote[]
   review              Review?
   assignmentHistories SessionAssignmentHistory[]
+  aiReasoningLogs     AiReasoningLog[]
+  ragSourceDocuments  RagDocument[]              @relation("RagSourceSession")
 
   @@map("chat_sessions")
 }
@@ -148,6 +151,7 @@ model Quote {
   session       ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   technician    User        @relation(fields: [technicianId], references: [id], onDelete: Cascade)
   expectedTime  String?
+
   @@map("quotes")
 }
 
@@ -164,16 +168,16 @@ model SessionAssignmentHistory {
 }
 
 model AiReasoningLog {
-  id              Int                @id @default(autoincrement())
-  sessionId       Int?
-  userId          Int
-  userMsg         String
-  prevState       Json?
-  nextState       Json?
-  riskLevel       String?
-  aiResponse      String?
-  aiFeedback      String?
-  score           Int                @default(0)
+  id                    Int              @id @default(autoincrement())
+  sessionId             Int?
+  userId                Int
+  userMsg               String
+  prevState             Json?
+  nextState             Json?
+  riskLevel             String?
+  aiResponse            String?
+  aiFeedback            String?
+  score                 Int              @default(0)
   autoUsefulnessScore   Int?
   autoUsefulnessLabel   UsefulnessLabel?
   autoUsefulnessReasons String[]
@@ -181,12 +185,15 @@ model AiReasoningLog {
   humanUsefulnessNote   String?
   reviewedById          Int?
   reviewedAt            DateTime?
-  deviceCategory  String?
-  isGolden        Boolean            @default(false)
-  createdAt       DateTime           @default(now())
+  deviceCategory        String?
+  isGolden              Boolean          @default(false)
+  createdAt             DateTime         @default(now())
+
   reviewedBy      User?              @relation("AiReasoningLogReviewer", fields: [reviewedById], references: [id])
   retrievedChunks AiRetrievedChunk[]
+  session         ChatSession?       @relation(fields: [sessionId], references: [id], onDelete: SetNull)
 
+  @@index([sessionId])
   @@map("ai_reasoning_logs")
 }
 
@@ -223,7 +230,11 @@ model RagDocument {
   updatedAt        DateTime          @updatedAt
   chunks           RagChunk[]
   uploadedBy       User?             @relation(fields: [uploadedById], references: [id])
+  sourceType       RagSourceType     @default(MANUAL_DOCUMENT)
+  sourceSessionId  Int?
+  sourceSession    ChatSession?      @relation("RagSourceSession", fields: [sourceSessionId], references: [id], onDelete: SetNull)
 
+  @@unique([sourceType, sourceSessionId])
   @@index([status])
   @@index([category])
   @@index([brand])
@@ -232,6 +243,8 @@ model RagDocument {
   @@index([isActive])
   @@index([uploadedById])
   @@index([checksum])
+  @@index([sourceType])
+  @@index([sourceSessionId])
   @@map("rag_documents")
 }
 
@@ -395,4 +408,9 @@ enum UsefulnessLabel {
   USEFUL
   PARTIAL
   NOT_USEFUL
+}
+
+enum RagSourceType {
+  MANUAL_DOCUMENT
+  CHAT_CONVERSATION
 }

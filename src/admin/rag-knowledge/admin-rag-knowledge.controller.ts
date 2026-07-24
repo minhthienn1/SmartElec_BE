@@ -26,6 +26,7 @@ import { ImportRagFileDto } from '../../rag/dto/import-rag-file.dto';
 import { IngestDocumentDto } from '../../rag/dto/ingest-document.dto';
 import { UpdateRagDocumentDto } from '../../rag/dto/update-rag-document.dto';
 import { RagDocumentChunksQueryDto } from '../../rag/dto/rag-document-chunks-query.dto';
+import { ImportRagConversationDto } from './dto/import-rag-conversation.dto';
 import {
   ALLOWED_RAG_IMPORT_EXTENSIONS,
   ALLOWED_RAG_IMPORT_MIME_TYPES,
@@ -77,6 +78,22 @@ export class AdminRagKnowledgeController {
   @Get('documents')
   getDocuments() {
     return this.adminRagKnowledgeService.getDocuments();
+  }
+
+  @Get('conversation-candidates')
+  getConversationCandidates(
+    @Query('type') type?: string,
+    @Query('search') search?: string,
+  ) {
+    return this.adminRagKnowledgeService.getConversationCandidates({
+      type,
+      search,
+    });
+  }
+
+  @Post('import-conversation')
+  importConversation(@Body() dto: ImportRagConversationDto) {
+    return this.adminRagKnowledgeService.importConversationCandidate(dto);
   }
 
   @Get('documents/:id/chunks')
