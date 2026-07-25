@@ -383,19 +383,19 @@ export class AiService {
       });
       const sessionContext = sessionId
         ? await this.prisma.chatSession.findUnique({
-            where: { id: sessionId },
-            select: {
-              status: true,
-              deviceType: true,
-              device: {
-                select: {
-                  category: true,
-                  brandName: true,
-                  modelCode: true,
-                },
+          where: { id: sessionId },
+          select: {
+            status: true,
+            deviceType: true,
+            device: {
+              select: {
+                category: true,
+                brandName: true,
+                modelCode: true,
               },
             },
-          })
+          },
+        })
         : null;
 
       if (sessionContext && sessionContext.status !== 'AI_CONSULTING') {
@@ -413,7 +413,7 @@ export class AiService {
         select: { role: true },
       });
       const accessLevel = (user?.role === 'TECHNICIAN' || user?.role === 'ADMIN') ? 'ADVANCED' : 'BASIC';
-      
+
       let ragContext = `
 [KIáº¾N THá»¨C Tá»ª Há»† THá»NG]:
 Khong tim thay tai lieu noi bo phu hop cho cau hoi nay. Khong duoc bia nguon hoac noi rang da tham khao tai lieu noi bo neu thuc te khong co.
@@ -468,7 +468,7 @@ Khong tim thay tai lieu noi bo phu hop cho cau hoi nay. Khong duoc bia nguon hoa
           results = ragRes.results as any[];
         }
 
-        const errorCodesMatch = message.match(/\b[A-Z][0-9]\b|\b[A-Z]{2,3}[0-9]?\b/g); 
+        const errorCodesMatch = message.match(/\b[A-Z][0-9]\b|\b[A-Z]{2,3}[0-9]?\b/g);
         if (errorCodesMatch && errorCodesMatch.length > 0) {
           results.sort((a, b) => {
             const aHasCode = errorCodesMatch.some(c => a.content.includes(c) || a.title.includes(c));
@@ -546,7 +546,7 @@ ${negativeText || '   (Chưa có)'}
       </user_input>
 
       Hãy phân tích và phản hồi dựa trên vai trò SmartElec Buddy.`;
-      
+
       const parts: any[] = [{ text: userPrompt }];
       if (imageBase64) {
         parts.push({ inlineData: { mimeType: 'image/jpeg', data: imageBase64 } });
@@ -554,7 +554,7 @@ ${negativeText || '   (Chưa có)'}
 
       // ✅ LỌC LỊCH SỬ GEMINI
       const cleanHistory: { role: string; parts: { text: string }[] }[] = [];
-      let expectedRole = 'user'; 
+      let expectedRole = 'user';
       for (const h of history.slice(-10)) {
         const mappedRole = h.role === 'assistant' || h.role === 'model' ? 'model' : 'user';
         if (mappedRole === expectedRole) {
@@ -589,13 +589,18 @@ ${negativeText || '   (Chưa có)'}
         this.logger.log(`⚙️ Reset mức độ rủi ro do đổi thiết bị từ ${prevState.device} sang ${parsed.state.device}`);
       }
 
+      // Xử lý trường hợp AI khuyên đặt thợ nhưng flag bị LLM bỏ quên
+      if (parsed.text && (parsed.text.includes('[ĐẶT THỢ]') || parsed.text.includes('Đặt thợ ngay'))) {
+        parsed.is_booking_triggered = true;
+      }
+
       // ── 6. XỬ LÝ BOOKING ───────────────────
       if (parsed.state?.risk === 'RED' || parsed.is_booking_triggered) {
-        
+
         // Nếu dính mức ĐỎ, ta chủ động ép cờ booking thành true để Flutter hiện nút luôn
         if (parsed.state?.risk === 'RED') {
           parsed.is_booking_triggered = true;
-          
+
           // Thêm một câu hướng dẫn khách bấm nút khẩn cấp nếu AI chưa kịp nói
           if (!parsed.text.includes('[ĐẶT THỢ]') && !parsed.text.includes('Đặt thợ ngay')) {
             parsed.text += `\n\n🚨 **TÌNH HUỐNG KHẨN CẤP:** Để hỗ trợ bạn xử lý sự cố nguy hiểm này nhanh nhất, mình đã mở cổng điều phối. Bạn vui lòng nhấn vào nút **[Đặt thợ ngay]** màu xanh lá bên dưới để kỹ thuật viên chạy qua hỗ trợ bạn lập tức nhé!`;
@@ -606,8 +611,29 @@ ${negativeText || '   (Chưa có)'}
         const brand = parsed.state?.brand || (prevState as any)?.brand || null;
         const model = parsed.state?.model || (prevState as any)?.model || null;
         const symptom = parsed.state?.symptom || (prevState as any)?.symptom || 'sự cố';
-        
-       sessionId = await this.saveRepairCase(userId, device, brand, model, symptom, parsed.text || 'Booking via AI', sessionId);
+        const isDangerous = parsed.state?.risk === 'RED';
+        let summary = parsed.text || 'Booking via AI';
+
+        try {
+          // Dùng model plain-text riêng biệt (không có JSON schema) để tạo tóm tắt
+          const summaryModel = this.genAI.getGenerativeModel({
+            model: 'gemini-2.5-flash',
+            generationConfig: { temperature: 0.3 },
+          });
+          const summaryPrompt = `Tóm tắt ngắn gọn tình trạng thiết bị sau trong 1-2 câu tiếng Việt:
+Khách báo: ${cleanMessage}
+AI chẩn đoán: ${parsed.text}
+Yêu cầu: Viết 1-2 câu tóm tắt (Ví dụ: Máy lạnh bị chảy nước do nghẹt ống xả, cần vệ sinh). Không xưng hô. Chỉ trả về câu tóm tắt, không giải thích gì thêm.`;
+          const summaryResult = await summaryModel.generateContent(summaryPrompt);
+          const summaryText = summaryResult.response.text()?.trim();
+          if (summaryText) {
+            summary = summaryText;
+          }
+        } catch (e) {
+          this.logger.warn('Lỗi khi generate summary', e);
+        }
+
+        sessionId = await this.saveRepairCase(userId, device, brand, model, symptom, summary, sessionId, isDangerous);
 
         let logId: number | null = null;
         try {
@@ -636,14 +662,36 @@ ${negativeText || '   (Chưa có)'}
 
       // ── 8. LƯU REPAIR CASE ──────────────────────
       if (parsed.state?.device && parsed.state.symptom) {
+        let summary = parsed.text;
+        const isDangerous = parsed.state?.risk === 'RED';
+        try {
+          // Dùng model plain-text riêng biệt (không có JSON schema) để tạo tóm tắt
+          const summaryModel = this.genAI.getGenerativeModel({
+            model: 'gemini-2.5-flash',
+            generationConfig: { temperature: 0.3 },
+          });
+          const summaryPrompt = `Tóm tắt ngắn gọn tình trạng thiết bị sau trong 1-2 câu tiếng Việt:
+Khách báo: ${cleanMessage}
+AI chẩn đoán: ${parsed.text}
+Yêu cầu: Viết 1-2 câu tóm tắt (Ví dụ: Máy lạnh bị chảy nước do nghẹt ống xả, cần vệ sinh). Không xưng hô. Chỉ trả về câu tóm tắt, không giải thích gì thêm.`;
+          const summaryResult = await summaryModel.generateContent(summaryPrompt);
+          const summaryText = summaryResult.response.text()?.trim();
+          if (summaryText) {
+            summary = summaryText;
+          }
+        } catch (e) {
+          this.logger.warn('Lỗi khi generate summary', e);
+        }
+
         sessionId = await this.saveRepairCase(
           userId,
           parsed.state.device,
           parsed.state.brand || null,
           parsed.state.model || null,
           parsed.state.symptom,
-          parsed.text,
+          summary,
           sessionId,
+          isDangerous
         );
       }
 
@@ -662,7 +710,7 @@ ${negativeText || '   (Chưa có)'}
 
     } catch (error: any) {
       this.logger.error(`AI Error: ${error.message}`, error);
-      
+
       if (error instanceof HttpException) throw error;
 
       // Mảng các câu trả lời khéo léo
@@ -930,6 +978,7 @@ Hãy phân tích và trả lời với tư cách SmartElec Pro — trợ lý k�
     symptom: string,
     summary: string,
     sessionId?: number | null, // ➕ Nhận thêm tham số này
+    isDangerous: boolean = false,
   ): Promise<number | null> {
     try {
       // 1. Nếu Flutter có gửi sessionId lên, ưu tiên tìm và UPDATE trực tiếp vào session đó
@@ -947,6 +996,7 @@ Hãy phân tích và trả lời với tư cách SmartElec Pro — trợ lý k�
               modelCode,
               symptom,    // Cập nhật triệu chứng mới nhất
               aiSummary: summary, // Cập nhật câu trả lời mới nhất từ AI làm tóm tắt
+              isDangerous,
             },
           });
           return updated.id;
@@ -961,18 +1011,18 @@ Hãy phân tích và trả lời với tư cách SmartElec Pro — trợ lý k�
           createdAt: { gte: new Date(Date.now() - 1000 * 60 * 30) },
         },
       });
-      
+
       if (recentCase) {
         const updated = await this.prisma.chatSession.update({
           where: { id: recentCase.id },
-          data: { symptom, brand, modelCode, aiSummary: summary },
+          data: { symptom, brand, modelCode, aiSummary: summary, isDangerous },
         });
         return updated.id;
       }
 
       // 3. Nếu hoàn toàn là cuộc trò chuyện mới tinh -> Tiến hành tạo mới (CREATE)
       const newCase = await this.prisma.chatSession.create({
-        data: { userId, deviceType, brand, modelCode, symptom, aiSummary: summary, status: 'AI_CONSULTING' },
+        data: { userId, deviceType, brand, modelCode, symptom, aiSummary: summary, status: 'AI_CONSULTING', isDangerous },
       });
       return newCase.id;
     } catch (error: any) {
@@ -994,7 +1044,7 @@ Hãy phân tích và trả lời với tư cách SmartElec Pro — trợ lý k�
 
     await this.prisma.aiReasoningLog.update({
       where: { id: logId },
-      data: { 
+      data: {
         aiFeedback: feedback,
         score: { increment: scoreIncrement }
       },
@@ -1009,7 +1059,7 @@ Hãy phân tích và trả lời với tư cách SmartElec Pro — trợ lý k�
   async getGoldenExamples(category: string, limit: number = 2) {
     // 1. Lấy top câu tốt nhất liên quan đến loại thiết bị
     const golden = await this.prisma.aiReasoningLog.findMany({
-      where: { 
+      where: {
         deviceCategory: { contains: category, mode: 'insensitive' },
         OR: [{ score: { gt: 5 } }, { isGolden: true }],
         aiResponse: { not: null }

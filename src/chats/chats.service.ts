@@ -296,15 +296,6 @@ export class ChatsService {
             ? {
               OR: [
                 { technicianId: userId, status: { notIn: hiddenStatuses } },
-                {
-                  status: JobStatus.BROADCASTING,
-                  assignmentHistories: {
-                    none: {
-                      technicianId: userId,
-                      action: 'MANUAL_CANCEL',
-                    },
-                  },
-                },
               ],
             }
             : { userId, status: { notIn: hiddenStatuses } },
@@ -667,6 +658,9 @@ export class ChatsService {
         },
         technician: { select: { id: true, fullName: true, avatarUrl: true, role: true, phoneNumber: true, averageRating: true, totalReviews: true } },
         review: true,
+        quotes: {
+          orderBy: { createdAt: 'desc' }
+        },
       },
     });
   }
@@ -1396,23 +1390,28 @@ export class ChatsService {
     );
   }
 
-  @Cron('0 */5 * * * *')
+  @Cron(CronExpression.EVERY_MINUTE)
   async handleExpireUnacceptedJobs() {
-    const expireTime = new Date(
-      Date.now() - this.BROADCAST_EXPIRE_MINUTES * 60 * 1000,
-    );
+    const now = new Date();
 
-    const expiredSessions = await this.prisma.chatSession.findMany({
+    const broadcastingSessions = await this.prisma.chatSession.findMany({
       where: {
         status: JobStatus.BROADCASTING,
-        createdAt: { lt: expireTime },
       },
+    });
+
+    if (broadcastingSessions.length === 0) return;
+
+    const expiredSessions = broadcastingSessions.filter(session => {
+      const expireMinutes = session.isDangerous ? 10 : 15;
+      const expireTime = new Date(session.updatedAt.getTime() + expireMinutes * 60 * 1000);
+      return now > expireTime;
     });
 
     if (expiredSessions.length === 0) return;
 
     this.logger.log(
-      `⏰ [CronJob] Tìm thấy ${expiredSessions.length} đơn quá hạn ${this.BROADCAST_EXPIRE_MINUTES} phút không có thợ nhận, đang tự động hủy...`,
+      `⏰ [CronJob] Tìm thấy ${expiredSessions.length} đơn quá hạn không có thợ nhận, đang tự động hủy...`,
     );
 
     for (const session of expiredSessions) {
@@ -1428,6 +1427,24 @@ export class ChatsService {
         status: JobStatus.CANCELLED,
         message: '🔴 Đơn hàng đã hết hạn do không có thợ nhận.',
       });
+      
+      const user = await this.prisma.user.findUnique({
+        where: { id: session.userId },
+        select: { fcmToken: true },
+      });
+
+      if (user?.fcmToken) {
+        this.notificationsService.sendNotification({
+          token: user.fcmToken,
+          title: 'Đơn tìm thợ đã hết hạn 😢',
+          body: 'Rất tiếc chưa có thợ nào nhận đơn của bạn. Vui lòng đặt lại hoặc tìm cửa hàng khác.',
+          channelId: 'job_alerts',
+          data: {
+            type: 'JOB_EXPIRED',
+            sessionId: session.id.toString(),
+          },
+        }).catch(err => this.logger.error('Lỗi gửi push thông báo đơn hết hạn: ', err));
+      }
 
       this.logger.log(
         `✅ [CronJob] Đã tự động hủy đơn #${session.id} do quá hạn`,

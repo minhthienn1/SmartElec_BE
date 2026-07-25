@@ -1,5 +1,6 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 type ChatSessionType = 'AI_DIAGNOSIS' | 'DIRECT_BOOKING';
 
@@ -24,6 +25,32 @@ export class ChatHistoryService {
     sessionType: ChatSessionType = 'AI_DIAGNOSIS',
   ) {
     try {
+      let finalSummary = summary;
+
+      // Xử lý trường hợp frontend gửi nguyên một chuỗi JSON (chứa "text", "state", v.v.)
+      try {
+        const parsedSummary = JSON.parse(summary);
+        if (parsedSummary && typeof parsedSummary.text === 'string') {
+          finalSummary = parsedSummary.text;
+        }
+      } catch (e) {
+        // Không phải JSON, bỏ qua và giữ nguyên
+      }
+
+      if (finalSummary && finalSummary.length > 150) {
+        try {
+          const ai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+          const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
+          const summaryPrompt = `Tóm tắt ngắn gọn (1-2 câu) tình trạng thiết bị dựa trên chẩn đoán sau. Không xưng hô, chỉ nêu vấn đề và hướng xử lý:\n${finalSummary}`;
+          const result = await model.generateContent(summaryPrompt);
+          if (result.response.text()) {
+            finalSummary = result.response.text().trim();
+          }
+        } catch (e) {
+          console.error('Lỗi khi tóm tắt chat bằng Gemini:', e);
+        }
+      }
+
       // Nếu đã có sessionId truyền lên từ Flutter -> UPDATE phiên cũ
       if (sessionId) {
         console.log(`🔄 [Prisma] Đang cập nhật Session cũ ID: ${sessionId}`);
@@ -31,8 +58,8 @@ export class ChatHistoryService {
         const result = await this.prisma.chatSession.update({
           where: { id: sessionId },
           data: {
-            aiSummary: summary,
-            symptom: summary,
+            aiSummary: finalSummary,
+            symptom: finalSummary,
           },
           select: {
             id: true,
@@ -56,8 +83,8 @@ export class ChatHistoryService {
         data: {
           userId,
           deviceType: title,
-          aiSummary: summary,
-          symptom: summary,
+          aiSummary: finalSummary,
+          symptom: finalSummary,
           sessionType,
         },
         select: {
@@ -91,7 +118,7 @@ export class ChatHistoryService {
   async getUserHistory(userId: number) {
     try {
       return await this.prisma.chatSession.findMany({
-        where: { 
+        where: {
           userId,
           sessionType: 'AI_DIAGNOSIS', // Lọc chỉ lấy các phiên chat với AI (loại trừ DIRECT_BOOKING)
         },
