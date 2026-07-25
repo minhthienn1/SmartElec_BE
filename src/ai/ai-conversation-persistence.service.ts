@@ -274,7 +274,8 @@ export class AiConversationPersistenceService {
         const deviceType = this.getStringValue(state?.device) || 'thiết bị';
         const symptom =
             this.getStringValue(state?.symptom) || input.fallbackMessage;
-        const summary = input.parsed?.text || input.fallbackMessage;
+        // Dùng symptom làm summary ngắn gọn thay vì parsed.text (là toàn bộ câu trả lời AI dài dòng)
+        const summary = symptom || input.fallbackMessage;
 
         return this.saveRepairCase(
             input.userId,
