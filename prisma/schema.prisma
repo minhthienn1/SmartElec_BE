@@ -190,6 +190,7 @@ model AiReasoningLog {
   reviewedAt            DateTime?
   deviceCategory        String?
   isGolden              Boolean            @default(false)
+  techSessionKey        String?            // UUID nhóm nhiều tin nhắn cùng 1 phiên thợ
   createdAt             DateTime           @default(now())
   
   reviewedBy            User?              @relation("AiReasoningLogReviewer", fields: [reviewedById], references: [id])
@@ -197,6 +198,7 @@ model AiReasoningLog {
   session               ChatSession?       @relation(fields: [sessionId], references: [id], onDelete: SetNull)
 
   @@index([sessionId])
+  @@index([techSessionKey])
   @@map("ai_reasoning_logs")
 }
 

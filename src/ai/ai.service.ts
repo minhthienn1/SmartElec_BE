@@ -783,6 +783,7 @@ Yêu cầu: Viết 1-2 câu tóm tắt (Ví dụ: Máy lạnh bị chảy nướ
     message: string,
     imageBase64?: string,
     history: any[] = [],
+    techSessionKey?: string,
   ) {
     if (message.length > 2000) {
       throw new HttpException(
@@ -923,9 +924,10 @@ Hãy phân tích và trả lời với tư cách SmartElec Pro — trợ lý k�
         };
       }
 
-      // ── 4. LƯU LOG (OPTIONAL — không có sessionId cho tech chat) ────
+      // ── 4. LƯU LOG — gắn techSessionKey để nhóm các tin nhắn cùng phiên ────
+      let savedLogId: number | null = null;
       try {
-        await this.prisma.aiReasoningLog.create({
+        const log = await this.prisma.aiReasoningLog.create({
           data: {
             userId,
             sessionId: null,
@@ -937,13 +939,16 @@ Hãy phân tích và trả lời với tư cách SmartElec Pro — trợ lý k�
             score: 0,
             deviceCategory: parsed?.techState?.device || null,
             isGolden: false,
+            techSessionKey: techSessionKey || null,
           },
         });
+        savedLogId = log.id;
       } catch (e) {
         this.logger.warn('Không thể lưu tech reasoning log:', e);
       }
 
-      return parsed;
+      // Trả về text + logId để Flutter dùng cho rating
+      return { ...parsed, logId: savedLogId };
     } catch (error: any) {
       this.logger.error(`[Tech AI] Error: ${error.message}`, error);
 
@@ -1098,6 +1103,112 @@ Hãy phân tích và trả lời với tư cách SmartElec Pro — trợ lý k�
   // ─────────────────────────────────────────────────────────────────
   // RLHF: Lưu phản hồi Like/Dislike vào AiReasoningLog
   // ─────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────
+  // LỊCH SỬ CHAT AI CỦA THỢ (SmartElec Pro) — đọc từ AiReasoningLog
+  // Tech chat luôn lưu với sessionId: null (xem chatWithAI_Tech ở trên)
+  // nên lọc theo userId + sessionId null là tách đúng log của thợ,
+  // không lẫn với log chat của khách hàng (luôn gắn sessionId khi có session).
+  // ─────────────────────────────────────────────────────────────────
+  async getTechHistory(userId: number) {
+    // Lấy tất cả log tech của user (sessionId null = log của thợ)
+    const allLogs = await this.prisma.aiReasoningLog.findMany({
+      where: { userId, sessionId: null },
+      orderBy: { createdAt: 'asc' }, // Tăng dần để lấy tin đầu/cuối đúng
+      select: {
+        id: true,
+        userMsg: true,
+        aiResponse: true,
+        deviceCategory: true,
+        score: true,
+        humanUsefulnessNote: true,
+        techSessionKey: true,
+        createdAt: true,
+      },
+    });
+
+    // Group theo techSessionKey
+    const sessionMap = new Map<string, typeof allLogs>();
+    const noKeyLogs: typeof allLogs = [];
+
+    for (const log of allLogs) {
+      if (log.techSessionKey) {
+        const arr = sessionMap.get(log.techSessionKey) || [];
+        arr.push(log);
+        sessionMap.set(log.techSessionKey, arr);
+      } else {
+        // Log cũ không có techSessionKey → mỗi log là 1 entry riêng
+        noKeyLogs.push(log);
+      }
+    }
+
+    // Build result: mỗi session = 1 item
+    const result: any[] = [];
+
+    // Sessions có techSessionKey
+    for (const [, logs] of sessionMap) {
+      const first = logs[0];
+      const last = logs[logs.length - 1];
+      // Lấy score cao nhất trong session (thường chỉ có 1 log được rate)
+      const ratedLog = logs.find(l => l.score > 0) || null;
+      result.push({
+        id: last.id,                     // logId để rating
+        techSessionKey: first.techSessionKey,
+        userMsg: first.userMsg,           // Câu hỏi đầu phiên
+        aiResponse: last.aiResponse,      // Câu trả lời cuối phiên
+        deviceCategory: last.deviceCategory || first.deviceCategory,
+        score: ratedLog?.score ?? null,
+        humanUsefulnessNote: ratedLog?.humanUsefulnessNote ?? null,
+        messageCount: logs.length,
+        createdAt: first.createdAt,       // Thời gian bắt đầu phiên
+      });
+    }
+
+    // Log cũ không có key
+    for (const log of noKeyLogs) {
+      result.push({
+        id: log.id,
+        techSessionKey: null,
+        userMsg: log.userMsg,
+        aiResponse: log.aiResponse,
+        deviceCategory: log.deviceCategory,
+        score: log.score > 0 ? log.score : null,
+        humanUsefulnessNote: log.humanUsefulnessNote,
+        messageCount: 1,
+        createdAt: log.createdAt,
+      });
+    }
+
+    // Sắp xếp giảm dần theo thời gian
+    result.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return result;
+  }
+
+  async deleteTechHistory(userId: number, logId: number) {
+    const log = await this.prisma.aiReasoningLog.findUnique({ where: { id: logId } });
+    if (!log || log.userId !== userId) {
+      throw new HttpException('Không tìm thấy bản ghi hoặc bạn không có quyền xóa.', HttpStatus.NOT_FOUND);
+    }
+    await this.prisma.aiReasoningLog.delete({ where: { id: logId } });
+    return { success: true };
+  }
+
+  async rateTechHistory(userId: number, logId: number, score: number, comment?: string) {
+    const log = await this.prisma.aiReasoningLog.findUnique({ where: { id: logId } });
+    if (!log || log.userId !== userId) {
+      throw new HttpException('Không tìm thấy bản ghi hoặc bạn không có quyền đánh giá.', HttpStatus.NOT_FOUND);
+    }
+    const label = score >= 4 ? 'USEFUL' : score === 3 ? 'PARTIAL' : 'NOT_USEFUL';
+    await this.prisma.aiReasoningLog.update({
+      where: { id: logId },
+      data: {
+        score,
+        humanUsefulnessNote: comment?.trim() || null,
+        humanUsefulnessLabel: label,
+      },
+    });
+    return { success: true };
+  }
+
   async saveFeedback(logId: number, feedback: 'LIKE' | 'DISLIKE') {
     const log = await this.prisma.aiReasoningLog.findUnique({ where: { id: logId } });
     if (!log) {
