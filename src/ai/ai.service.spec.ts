@@ -41,16 +41,19 @@ describe('AiService structured extractor integration', () => {
     extract: jest.fn(),
   };
 
+  const configService = {
+    get: jest.fn().mockReturnValue('dummy_api_key'),
+  };
+  const relatedHistoryService = {
+    resolveDeviceId: jest.fn(),
+    findRelatedCase: jest.fn(),
+  };
+
   const service = new AiService(
     prisma as never,
+    configService as never,
     ragRetrievalService as never,
-    aiIntentGateService as never,
-    aiGuidedDiagnosisService as never,
-    aiResponseBuilderService as never,
-    aiConversationPersistenceService as never,
-    aiRateLimitService as never,
-    aiGeminiService as never,
-    aiStructuredExtractorService as never,
+    relatedHistoryService as never,
   );
 
   beforeEach(() => {
