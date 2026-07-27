@@ -40,7 +40,7 @@ export class ChatHistoryService {
       if (finalSummary && finalSummary.length > 150) {
         try {
           const ai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-          const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
+          const model = ai.getGenerativeModel({ model: 'gemini-3.5-flash' });
           const summaryPrompt = `Tóm tắt ngắn gọn (1-2 câu) tình trạng thiết bị dựa trên chẩn đoán sau. Không xưng hô, chỉ nêu vấn đề và hướng xử lý:\n${finalSummary}`;
           const result = await model.generateContent(summaryPrompt);
           if (result.response.text()) {

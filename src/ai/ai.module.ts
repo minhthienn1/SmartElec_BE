@@ -7,6 +7,7 @@ import { AiIntentGateService } from './ai-intent-gate.service';
 import { AiGuidedDiagnosisService } from './ai-guided-diagnosis.service';
 import { AiResponseBuilderService } from './ai-response-builder.service';
 import { AiConversationPersistenceService } from './ai-conversation-persistence.service';
+import { AiRelatedHistoryService } from './ai-related-history.service';
 import { AiRateLimitService } from './ai-rate-limit.service';
 import { AiGeminiService } from './ai-gemini.service';
 import { AiStructuredExtractorService } from './ai-structured-extractor.service';
@@ -23,6 +24,7 @@ import { RagModule } from '../rag/rag.module';
     AiGuidedDiagnosisService,
     AiResponseBuilderService,
     AiConversationPersistenceService,
+    AiRelatedHistoryService,
     AiRateLimitService,
     AiGeminiService,
     AiStructuredExtractorService,
