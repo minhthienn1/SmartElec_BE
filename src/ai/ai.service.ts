@@ -350,7 +350,7 @@ export class AiService {
     const lastTime = this.lastRequestTime.get(userId) || 0;
     if (now - lastTime < 2000) {
       throw new HttpException(
-        'Bạn đang thao tác quá nhanh, vui lòng đợi giây lát!',
+        { message: 'Bạn đang thao tác quá nhanh, vui lòng đợi giây lát!', code: 'LIMIT_PER_MINUTE' },
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
@@ -754,7 +754,22 @@ Yêu cầu: Viết 1-2 câu tóm tắt (Ví dụ: Máy lạnh bị chảy nướ
 
       if (error instanceof HttpException) throw error;
 
-      // Mảng các câu trả lời khéo léo
+      // Phân biệt 429 từ Gemini API: quota ngày đã hết
+      const isGemini429 =
+        error?.status === 429 ||
+        error?.statusCode === 429 ||
+        (error?.message && error.message.includes('429')) ||
+        (error?.errorDetails && JSON.stringify(error.errorDetails).includes('FreeTier'));
+
+      if (isGemini429) {
+        this.logger.warn(`[AI] Gemini quota exhausted cho user ${userId}`);
+        throw new HttpException(
+          { message: 'Lượt chat miễn phí hôm nay đã hết. Vui lòng quay lại vào ngày mai!', code: 'LIMIT_PER_DAY' },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+
+      // Mảng các câu trả lời khéo léo (Fallback bình thường)
       const fallbackMessages = [
         "Dạ, hiện tại mình đang hỗ trợ khá nhiều ca chẩn đoán cùng lúc nên tín hiệu hơi chập chờn. Bạn thông cảm thử lại sau vài phút giúp mình nhé!",
         "Dạ, đường truyền phân tích kỹ thuật đang tạm gián đoạn. Bạn đợi một chút rồi gửi lại tin nhắn nha!",
@@ -792,12 +807,12 @@ Yêu cầu: Viết 1-2 câu tóm tắt (Ví dụ: Máy lạnh bị chảy nướ
       );
     }
 
-    // ── RATE LIMIT (dùng chung map với key userId nhưng không chặn cross-role) ──
+    // ── RATE LIMIT nội bộ (2 giây giữa 2 request) ──
     const now = Date.now();
     const lastTime = this.lastRequestTime.get(userId) || 0;
     if (now - lastTime < 2000) {
       throw new HttpException(
-        'Bạn đang thao tác quá nhanh, vui lòng đợi giây lát!',
+        { message: 'Bạn đang chat quá nhanh, vui lòng đợi giây lát!', code: 'LIMIT_PER_MINUTE' },
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
@@ -953,6 +968,21 @@ Hãy phân tích và trả lời với tư cách SmartElec Pro — trợ lý k�
       this.logger.error(`[Tech AI] Error: ${error.message}`, error);
 
       if (error instanceof HttpException) throw error;
+
+      // Phân biệt 429 từ Gemini API: quota ngày đã hết
+      const isGemini429 =
+        error?.status === 429 ||
+        error?.statusCode === 429 ||
+        (error?.message && error.message.includes('429')) ||
+        (error?.errorDetails && JSON.stringify(error.errorDetails).includes('FreeTier'));
+
+      if (isGemini429) {
+        this.logger.warn(`[Tech AI] Gemini quota exhausted cho user ${userId}`);
+        throw new HttpException(
+          { message: 'Lượt chat miễn phí hôm nay đã hết. Vui lòng quay lại vào ngày mai!', code: 'LIMIT_PER_DAY' },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
 
       return {
         text: 'Hệ thống đang tạm thời gián đoạn. Bạn thử lại sau vài giây nhé!',
