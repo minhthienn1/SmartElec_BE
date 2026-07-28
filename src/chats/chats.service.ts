@@ -2135,12 +2135,21 @@ export class ChatsService {
   // ĐƠN ĐANG HOẠT ĐỘNG CỦA KHÁCH HÀNG
   // ─────────────────────────────────────────────────────────────────
   async getActiveRunningSessions(userId: number) {
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const sessions = await this.prisma.chatSession.findMany({
       where: {
         userId: userId,
-        status: {
-          in: ['BROADCASTING', 'MATCHED', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS']
-        }
+        OR: [
+          {
+            status: {
+              in: ['BROADCASTING', 'MATCHED', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS']
+            }
+          },
+          {
+            status: 'CANCELLED',
+            updatedAt: { gte: oneDayAgo }
+          }
+        ]
       },
       orderBy: { updatedAt: 'desc' },
       include: {
@@ -2154,42 +2163,62 @@ export class ChatsService {
   // ─────────────────────────────────────────────────────────────────
   // LỊCH SỬ SỬA CHỮA CỦA KHÁCH HÀNG
   // ─────────────────────────────────────────────────────────────────
-  async getUserRepairHistory(userId: number) {
-    const sessions = await this.prisma.chatSession.findMany({
-      where: {
-        userId: userId,
-        status: { in: ['COMPLETED', 'DONE'] },
-        isHiddenByCustomer: false, // Ẩn những ca mà khách đã xóa/ẩn
-      },
-      orderBy: {
-        updatedAt: 'desc',
-      },
-      include: {
-        technician: {
-          select: {
-            id: true,
-            fullName: true,
-            phoneNumber: true,
-            averageRating: true,
-          },
-        },
-        review: true,
-        quotes: {
-          where: {
-            status: 'ACCEPTED',
-          },
-        },
-      },
-    });
+  async getUserRepairHistory(userId: number, page: number = 1, limit: number = 10, statusFilter?: string) {
+    const skip = (page - 1) * limit;
 
-    return sessions.map((session) => {
+    let statusCondition: any = { in: ['COMPLETED', 'DONE', 'CANCELLED'] };
+    
+    if (statusFilter && statusFilter !== 'ALL') {
+      if (statusFilter === 'COMPLETED') {
+        statusCondition = { in: ['COMPLETED', 'DONE'] };
+      } else {
+        statusCondition = statusFilter;
+      }
+    }
+
+    const whereCondition: any = {
+      userId: userId,
+      status: statusCondition,
+      isHiddenByCustomer: false, // Ẩn những ca mà khách đã xóa/ẩn
+      technicianId: { not: null }, // CHỈ lấy những ca đã từng được nhận bởi thợ (bỏ qua chat AI thuần túy)
+    };
+
+    const [totalItems, sessions] = await Promise.all([
+      this.prisma.chatSession.count({ where: whereCondition }),
+      this.prisma.chatSession.findMany({
+        where: whereCondition,
+        orderBy: {
+          createdAt: 'desc',
+        },
+        skip: skip,
+        take: limit,
+        include: {
+          technician: {
+            select: {
+              id: true,
+              fullName: true,
+              phoneNumber: true,
+              averageRating: true,
+            },
+          },
+          review: true,
+          quotes: {
+            where: {
+              status: 'ACCEPTED',
+            },
+          },
+        },
+      }),
+    ]);
+
+    const mappedData = sessions.map((session) => {
       const acceptedQuote =
         session.quotes.length > 0 ? session.quotes[0] : null;
 
       return {
         id: session.id.toString(),
         title: session.deviceType || 'Sửa chữa thiết bị',
-        date: session.updatedAt.toISOString(),
+        date: session.createdAt.toISOString(),
         chatSummary:
           session.aiSummary || 'Đã thống nhất giá và hoàn tất sửa chữa.',
         status: session.status,
@@ -2207,5 +2236,14 @@ export class ChatsService {
           : 'Chưa chốt giá',
       };
     });
+
+    return {
+      data: mappedData,
+      meta: {
+        totalItems,
+        totalPages: Math.ceil(totalItems / limit),
+        currentPage: page,
+      },
+    };
   }
 }

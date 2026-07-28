@@ -101,6 +101,8 @@ model ChatSession {
   // Indexes (Giữ lại của bạn)
   @@index([userId, deviceId])
   @@index([userId, deviceType, status])
+  @@index([updatedAt])
+  @@index([status, updatedAt])
   @@map("chat_sessions")
 }
 
