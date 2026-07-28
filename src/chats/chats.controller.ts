@@ -509,9 +509,16 @@ export class ChatsController {
   // ─────────────────────────────────────────────────────────────────
   @Get('user/history')
   @UseGuards(JwtAuthGuard)
-  async getUserRepairHistory(@Req() req) {
+  async getUserRepairHistory(
+    @Req() req,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('status') status?: string,
+  ) {
     const userId = Number(req.user.id || req.user.userId || req.user.sub);
-    return this.chatsService.getUserRepairHistory(userId);
+    const pageNum = page ? parseInt(page, 10) : 1;
+    const limitNum = limit ? parseInt(limit, 10) : 10;
+    return this.chatsService.getUserRepairHistory(userId, pageNum, limitNum, status);
   }
 }
 

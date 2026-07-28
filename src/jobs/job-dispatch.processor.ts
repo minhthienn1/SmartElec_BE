@@ -106,10 +106,12 @@ export class JobDispatchProcessor extends WorkerHost {
         `⏱️ Scheduled Attempt 2 for Session #${sessionId} in 2 minutes.`,
       );
     } else if (attempt === 2) {
-      // Hẹn 8 phút nữa (tổng 10p) để check lần cuối và hủy nếu chưa ai nhận
-      await this.jobsService.addJobDispatch(sessionId, 3, 480000);
+      // Hẹn thêm tuỳ theo mức độ (Tổng 15p cho khẩn cấp, 10p cho thường)
+      const isUrgent = session.isDangerous;
+      const delay = isUrgent ? 13 * 60000 : 8 * 60000;
+      await this.jobsService.addJobDispatch(sessionId, 3, delay);
       this.logger.log(
-        `⏱️ Scheduled Final Check (Attempt 3) for Session #${sessionId} in 8 minutes.`,
+        `⏱️ Scheduled Final Check (Attempt 3) for Session #${sessionId} in ${isUrgent ? 13 : 8} minutes.`,
       );
     }
   }
@@ -137,7 +139,8 @@ export class JobDispatchProcessor extends WorkerHost {
     if (attempt === 1) {
       await this.jobsService.addJobDispatch(session.id, 2, 120000);
     } else if (attempt === 2) {
-      await this.jobsService.addJobDispatch(session.id, 3, 480000);
+      const delay = session.isDangerous ? 13 * 60000 : 8 * 60000;
+      await this.jobsService.addJobDispatch(session.id, 3, delay);
     }
   }
 
