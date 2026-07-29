@@ -22,7 +22,7 @@ export class AiGeminiService {
         this.genAI = new GoogleGenerativeAI(apiKey);
 
         this.model = this.genAI.getGenerativeModel({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-3.5-flash',
             systemInstruction: smartElecSystemPrompt,
             generationConfig: {
                 temperature: 0.1,
@@ -45,7 +45,7 @@ export class AiGeminiService {
             userPrompt: input.userPrompt,
             history: input.history,
             imageBase64: input.imageBase64,
-            model: 'gemini-2.5-flash',
+            model: 'gemini-3.5-flash',
         });
     }
 
@@ -56,6 +56,8 @@ export class AiGeminiService {
         history?: any[];
         imageBase64?: string;
         model?: string;
+        temperature?: number;
+        topP?: number;
     }): Promise<string> {
         const parts: any[] = [{ text: input.userPrompt }];
 
@@ -69,11 +71,11 @@ export class AiGeminiService {
         }
 
         const model = this.genAI.getGenerativeModel({
-            model: input.model || 'gemini-2.5-flash',
+            model: input.model || 'gemini-3.5-flash',
             systemInstruction: input.systemInstruction,
             generationConfig: {
-                temperature: 0.1,
-                topP: 0.8,
+                temperature: input.temperature ?? 0.1,
+                topP: input.topP ?? 0.8,
                 topK: 40,
                 responseMimeType: 'application/json',
                 responseSchema: input.responseSchema,

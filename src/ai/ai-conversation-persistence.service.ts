@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unnecessary-type-assertion */
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger } from '@nestjs/common';
-import { JobStatus, MessageType } from '@prisma/client';
+import { JobStatus, MessageType, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { evaluateAiUsefulness } from './ai-usefulness-scoring';
@@ -274,7 +274,8 @@ export class AiConversationPersistenceService {
         const deviceType = this.getStringValue(state?.device) || 'thiết bị';
         const symptom =
             this.getStringValue(state?.symptom) || input.fallbackMessage;
-        const summary = input.parsed?.text || input.fallbackMessage;
+        // Dùng symptom làm summary ngắn gọn thay vì parsed.text (là toàn bộ câu trả lời AI dài dòng)
+        const summary = symptom || input.fallbackMessage;
 
         return this.saveRepairCase(
             input.userId,
@@ -380,6 +381,7 @@ export class AiConversationPersistenceService {
                 senderId?: number | null;
                 type: MessageType;
                 content: string;
+                metadata?: Prisma.JsonValue | null;
             }> = [];
 
             if (userMessage) {
@@ -388,6 +390,7 @@ export class AiConversationPersistenceService {
                     senderId: input.userId,
                     type: MessageType.TEXT,
                     content: userMessage,
+                    metadata: { aiTranscript: true },
                 });
             }
 
@@ -397,6 +400,7 @@ export class AiConversationPersistenceService {
                     senderId: null,
                     type: MessageType.TEXT,
                     content: aiResponse,
+                    metadata: { aiTranscript: true },
                 });
             }
 

@@ -14,7 +14,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { CreateQuoteDto } from './dto/create-quote.dto';
-import { JobStatus, MessageType, UserRole } from '@prisma/client';
+import { JobStatus, MessageType, SessionType, UserRole } from '@prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ChatsGateway } from './chats.gateway';
 import { JobsService } from '../jobs/jobs.service';
@@ -286,6 +286,8 @@ export class ChatsService {
   async getAccessibleUserSessions(userId: number, role?: string) {
     const normalizedRole = role?.toUpperCase();
 
+    const hiddenStatuses = [JobStatus.COMPLETED, JobStatus.DONE, JobStatus.CANCELLED];
+
     const sessions = await this.prisma.chatSession.findMany({
       where:
         normalizedRole === UserRole.ADMIN
@@ -293,19 +295,10 @@ export class ChatsService {
           : normalizedRole === UserRole.TECHNICIAN
             ? {
               OR: [
-                { technicianId: userId },
-                {
-                  status: JobStatus.BROADCASTING,
-                  assignmentHistories: {
-                    none: {
-                      technicianId: userId,
-                      action: 'MANUAL_CANCEL',
-                    },
-                  },
-                },
+                { technicianId: userId, status: { notIn: hiddenStatuses } },
               ],
             }
-            : { userId },
+            : { userId, status: { notIn: hiddenStatuses } },
       orderBy: { updatedAt: 'desc' },
       include: {
         user: {
@@ -665,6 +658,9 @@ export class ChatsService {
         },
         technician: { select: { id: true, fullName: true, avatarUrl: true, role: true, phoneNumber: true, averageRating: true, totalReviews: true } },
         review: true,
+        quotes: {
+          orderBy: { createdAt: 'desc' }
+        },
       },
     });
   }
@@ -690,7 +686,16 @@ export class ChatsService {
 
   async getMessages(sessionId: number, cursor?: number, limit: number = 20) {
     try {
-      const messages = await this.prisma.message.findMany({
+      const session = await this.prisma.chatSession.findUnique({
+        where: { id: sessionId },
+        select: { status: true, sessionType: true },
+      });
+
+      if (!session) {
+        throw new NotFoundException('Phiên chat không tồn tại.');
+      }
+
+      let messages = await this.prisma.message.findMany({
         where: {
           sessionId,
           isDeleted: false,
@@ -709,6 +714,14 @@ export class ChatsService {
           },
         },
       });
+
+      if (session.status !== JobStatus.AI_CONSULTING) {
+        messages = messages.filter((message) => {
+          const metadata = message.metadata as Record<string, any> | null;
+          return metadata?.aiTranscript !== true;
+        });
+      }
+
       if (messages.length > 0) {
         return messages.reverse();
       }
@@ -717,8 +730,19 @@ export class ChatsService {
         return [];
       }
 
+      if (session.status !== JobStatus.AI_CONSULTING) {
+        return [];
+      }
+
+      if (session.sessionType !== SessionType.AI_DIAGNOSIS) {
+        return [];
+      }
+
       return this.buildMessagesFromAiLogs(sessionId, limit);
     } catch (error: any) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
       throw new InternalServerErrorException(
         'Lỗi khi tải tin nhắn: ' + error.message,
       );
@@ -1366,23 +1390,28 @@ export class ChatsService {
     );
   }
 
-  @Cron('0 */5 * * * *')
+  @Cron(CronExpression.EVERY_MINUTE)
   async handleExpireUnacceptedJobs() {
-    const expireTime = new Date(
-      Date.now() - this.BROADCAST_EXPIRE_MINUTES * 60 * 1000,
-    );
+    const now = new Date();
 
-    const expiredSessions = await this.prisma.chatSession.findMany({
+    const broadcastingSessions = await this.prisma.chatSession.findMany({
       where: {
         status: JobStatus.BROADCASTING,
-        createdAt: { lt: expireTime },
       },
+    });
+
+    if (broadcastingSessions.length === 0) return;
+
+    const expiredSessions = broadcastingSessions.filter(session => {
+      const expireMinutes = session.isDangerous ? 10 : 15;
+      const expireTime = new Date(session.updatedAt.getTime() + expireMinutes * 60 * 1000);
+      return now > expireTime;
     });
 
     if (expiredSessions.length === 0) return;
 
     this.logger.log(
-      `⏰ [CronJob] Tìm thấy ${expiredSessions.length} đơn quá hạn ${this.BROADCAST_EXPIRE_MINUTES} phút không có thợ nhận, đang tự động hủy...`,
+      `⏰ [CronJob] Tìm thấy ${expiredSessions.length} đơn quá hạn không có thợ nhận, đang tự động hủy...`,
     );
 
     for (const session of expiredSessions) {
@@ -1398,6 +1427,24 @@ export class ChatsService {
         status: JobStatus.CANCELLED,
         message: '🔴 Đơn hàng đã hết hạn do không có thợ nhận.',
       });
+      
+      const user = await this.prisma.user.findUnique({
+        where: { id: session.userId },
+        select: { fcmToken: true },
+      });
+
+      if (user?.fcmToken) {
+        this.notificationsService.sendNotification({
+          token: user.fcmToken,
+          title: 'Đơn tìm thợ đã hết hạn 😢',
+          body: 'Rất tiếc chưa có thợ nào nhận đơn của bạn. Vui lòng đặt lại hoặc tìm cửa hàng khác.',
+          channelId: 'job_alerts',
+          data: {
+            type: 'JOB_EXPIRED',
+            sessionId: session.id.toString(),
+          },
+        }).catch(err => this.logger.error('Lỗi gửi push thông báo đơn hết hạn: ', err));
+      }
 
       this.logger.log(
         `✅ [CronJob] Đã tự động hủy đơn #${session.id} do quá hạn`,
@@ -2088,12 +2135,21 @@ export class ChatsService {
   // ĐƠN ĐANG HOẠT ĐỘNG CỦA KHÁCH HÀNG
   // ─────────────────────────────────────────────────────────────────
   async getActiveRunningSessions(userId: number) {
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const sessions = await this.prisma.chatSession.findMany({
       where: {
         userId: userId,
-        status: {
-          in: ['BROADCASTING', 'MATCHED', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS']
-        }
+        OR: [
+          {
+            status: {
+              in: ['BROADCASTING', 'MATCHED', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS']
+            }
+          },
+          {
+            status: 'CANCELLED',
+            updatedAt: { gte: oneDayAgo }
+          }
+        ]
       },
       orderBy: { updatedAt: 'desc' },
       include: {
@@ -2107,42 +2163,62 @@ export class ChatsService {
   // ─────────────────────────────────────────────────────────────────
   // LỊCH SỬ SỬA CHỮA CỦA KHÁCH HÀNG
   // ─────────────────────────────────────────────────────────────────
-  async getUserRepairHistory(userId: number) {
-    const sessions = await this.prisma.chatSession.findMany({
-      where: {
-        userId: userId,
-        status: { in: ['COMPLETED', 'DONE'] },
-        isHiddenByCustomer: false, // Ẩn những ca mà khách đã xóa/ẩn
-      },
-      orderBy: {
-        updatedAt: 'desc',
-      },
-      include: {
-        technician: {
-          select: {
-            id: true,
-            fullName: true,
-            phoneNumber: true,
-            averageRating: true,
-          },
-        },
-        review: true,
-        quotes: {
-          where: {
-            status: 'ACCEPTED',
-          },
-        },
-      },
-    });
+  async getUserRepairHistory(userId: number, page: number = 1, limit: number = 10, statusFilter?: string) {
+    const skip = (page - 1) * limit;
 
-    return sessions.map((session) => {
+    let statusCondition: any = { in: ['COMPLETED', 'DONE', 'CANCELLED'] };
+    
+    if (statusFilter && statusFilter !== 'ALL') {
+      if (statusFilter === 'COMPLETED') {
+        statusCondition = { in: ['COMPLETED', 'DONE'] };
+      } else {
+        statusCondition = statusFilter;
+      }
+    }
+
+    const whereCondition: any = {
+      userId: userId,
+      status: statusCondition,
+      isHiddenByCustomer: false, // Ẩn những ca mà khách đã xóa/ẩn
+      technicianId: { not: null }, // CHỈ lấy những ca đã từng được nhận bởi thợ (bỏ qua chat AI thuần túy)
+    };
+
+    const [totalItems, sessions] = await Promise.all([
+      this.prisma.chatSession.count({ where: whereCondition }),
+      this.prisma.chatSession.findMany({
+        where: whereCondition,
+        orderBy: {
+          createdAt: 'desc',
+        },
+        skip: skip,
+        take: limit,
+        include: {
+          technician: {
+            select: {
+              id: true,
+              fullName: true,
+              phoneNumber: true,
+              averageRating: true,
+            },
+          },
+          review: true,
+          quotes: {
+            where: {
+              status: 'ACCEPTED',
+            },
+          },
+        },
+      }),
+    ]);
+
+    const mappedData = sessions.map((session) => {
       const acceptedQuote =
         session.quotes.length > 0 ? session.quotes[0] : null;
 
       return {
         id: session.id.toString(),
         title: session.deviceType || 'Sửa chữa thiết bị',
-        date: session.updatedAt.toISOString(),
+        date: session.createdAt.toISOString(),
         chatSummary:
           session.aiSummary || 'Đã thống nhất giá và hoàn tất sửa chữa.',
         status: session.status,
@@ -2160,5 +2236,14 @@ export class ChatsService {
           : 'Chưa chốt giá',
       };
     });
+
+    return {
+      data: mappedData,
+      meta: {
+        totalItems,
+        totalPages: Math.ceil(totalItems / limit),
+        currentPage: page,
+      },
+    };
   }
 }

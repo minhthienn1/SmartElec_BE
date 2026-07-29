@@ -18,12 +18,14 @@ describe('ChatsService session access and device lock', () => {
       create: jest.fn(),
       count: jest.fn(),
       findUnique: jest.fn(),
+      findMany: jest.fn(),
     },
     user: {
       findUnique: jest.fn(),
     },
     aiReasoningLog: {
       findFirst: jest.fn(),
+      findMany: jest.fn(),
     },
     $transaction: jest.fn(),
   };
@@ -219,5 +221,72 @@ describe('ChatsService session access and device lock', () => {
     expect(jobsService.addJobDispatch).not.toHaveBeenCalled();
     expect(chatsGateway.emitGlobal).not.toHaveBeenCalled();
     expect(result.status).toBe('BROADCASTING');
+  });
+
+  it('filters out persisted AI transcript messages once the session leaves AI_CONSULTING', async () => {
+    prisma.chatSession.findUnique.mockResolvedValue({
+      id: 43,
+      status: 'MATCHED',
+      sessionType: 'AI_DIAGNOSIS',
+    });
+    prisma.message.findMany.mockResolvedValue([
+      {
+        id: 101,
+        sessionId: 43,
+        senderId: 10,
+        sender: { id: 10, fullName: 'Người dùng', avatarUrl: null, role: 'USER' },
+        type: 'TEXT',
+        content: 'Tôi có vấn đề',
+        metadata: { aiTranscript: true },
+        isRead: true,
+        isDeleted: false,
+        createdAt: new Date('2026-07-23T08:00:00.000Z'),
+      },
+      {
+        id: 102,
+        sessionId: 43,
+        senderId: null,
+        sender: null,
+        type: 'TEXT',
+        content: 'Đây là trả lời AI',
+        metadata: { aiTranscript: true },
+        isRead: true,
+        isDeleted: false,
+        createdAt: new Date('2026-07-23T08:00:01.000Z'),
+      },
+      {
+        id: 103,
+        sessionId: 43,
+        senderId: 20,
+        sender: { id: 20, fullName: 'Thợ', avatarUrl: null, role: 'TECHNICIAN' },
+        type: 'TEXT',
+        content: 'Tôi đến rồi',
+        metadata: null,
+        isRead: false,
+        isDeleted: false,
+        createdAt: new Date('2026-07-23T08:05:00.000Z'),
+      },
+    ]);
+
+    const result = await service.getMessages(43);
+
+    expect(result).toEqual([
+      expect.objectContaining({ id: 103, content: 'Tôi đến rồi' }),
+    ]);
+    expect(prisma.aiReasoningLog.findMany).not.toHaveBeenCalled();
+  });
+
+  it('returns an empty message list for DIRECT_BOOKING sessions even when status is AI_CONSULTING', async () => {
+    prisma.chatSession.findUnique.mockResolvedValue({
+      id: 42,
+      status: 'AI_CONSULTING',
+      sessionType: 'DIRECT_BOOKING',
+    });
+    prisma.message.findMany.mockResolvedValue([]);
+
+    const result = await service.getMessages(42);
+
+    expect(result).toEqual([]);
+    expect(prisma.aiReasoningLog.findMany).not.toHaveBeenCalled();
   });
 });
