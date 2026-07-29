@@ -219,7 +219,18 @@ export class RagService {
   }
 
   async ingestDocument(dto: IngestDocumentDto) {
-    const { title, content, category, source, accessLevel = 'ADVANCED' } = dto;
+    const {
+      title,
+      content,
+      category,
+      description,
+      brand,
+      modelCode,
+      source,
+      tags = [],
+      kind,
+      accessLevel = 'ADVANCED',
+    } = dto;
     const textToEmbed = buildChunkEmbeddingText({
       documentTitle: title,
       category: category || null,
@@ -239,10 +250,14 @@ export class RagService {
         const createdDocument = await tx.ragDocument.create({
           data: {
             title,
+            description: description || null,
             category: category || null,
+            brand: brand || null,
+            modelCode: modelCode || null,
             source: source || null,
+            kind: kind || null,
             accessLevel,
-            tags: [],
+            tags,
             status: RagDocumentStatus.EMBEDDING,
             totalCharacters,
           },
@@ -255,10 +270,18 @@ export class RagService {
             title,
             content,
             category: category || null,
+            brand: brand || null,
+            modelCode: modelCode || null,
             accessLevel,
-            tags: [],
+            tags,
             charCount: totalCharacters,
             tokenCount: this.estimateTokenCount(content),
+            metadata: source?.startsWith('CHAT_SESSION:')
+              ? {
+                  sourceType: 'CHAT_CONVERSATION',
+                  source,
+                }
+              : undefined,
           },
         });
 

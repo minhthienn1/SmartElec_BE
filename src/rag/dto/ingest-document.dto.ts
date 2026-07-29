@@ -1,11 +1,12 @@
 import {
+  IsArray,
   IsString,
   IsOptional,
   IsEnum,
   IsNotEmpty,
   MaxLength,
 } from 'class-validator';
-import { AccessLevel } from '@prisma/client';
+import { AccessLevel, RagDocumentKind } from '@prisma/client';
 
 export class IngestDocumentDto {
   @IsString()
@@ -24,7 +25,28 @@ export class IngestDocumentDto {
 
   @IsString()
   @IsOptional()
+  description?: string;
+
+  @IsString()
+  @IsOptional()
+  brand?: string;
+
+  @IsString()
+  @IsOptional()
+  modelCode?: string;
+
+  @IsString()
+  @IsOptional()
   source?: string; // Vd: "Manual Daikin 2024", "Kỹ thuật viên nội bộ"
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  tags?: string[];
+
+  @IsEnum(RagDocumentKind)
+  @IsOptional()
+  kind?: RagDocumentKind;
 
   @IsEnum(AccessLevel)
   @IsOptional()
