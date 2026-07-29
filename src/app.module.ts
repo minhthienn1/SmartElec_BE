@@ -11,9 +11,11 @@ import { PrismaModule } from './prisma/prisma.module';
 import { ChatHistoryModule } from './chat-history/chat-history.module';
 import { DevicesModule } from './devices/devices.module';
 import { ChatsModule } from './chats/chats.module';
+import { ChatsWebModule } from './chats_web/chats-web.module';
 import { UploadModule } from './upload/upload.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { AiModule } from './ai/ai.module';
+import { AiWebModule } from './ai_web/ai.module';
 import { MechanicAiModule } from './mechanic-ai/mechanic-ai.module';
 import { JobsModule } from './jobs/jobs.module';
 import { AdminModule } from './admin/admin.module';
@@ -53,9 +55,11 @@ import { TechnicianModule } from './technician/technician.module';
     ChatHistoryModule,
     DevicesModule,
     ChatsModule,
+    ChatsWebModule,
     UploadModule,
     NotificationsModule,
     AiModule,
+    AiWebModule,
     MechanicAiModule,
     RagModule,
     JobsModule,
