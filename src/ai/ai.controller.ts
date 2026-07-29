@@ -57,10 +57,9 @@ export class AiController {
       throw new BadRequestException('Vui lòng nhập câu hỏi kỹ thuật.');
     }
 
-    return this.aiService.chatWithAI(
+    return this.aiService.chatWithAI_Tech(
       userId,
       body.message,
-      null,
       body.image,
       body.history || [],
       body.techSessionKey,
