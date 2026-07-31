@@ -87,6 +87,9 @@ model ChatSession {
   technicianId       Int?
   version            Int                        @default(1)
   sessionType        SessionType                @default(AI_DIAGNOSIS)
+  aiRating           Int?          
+  aiRatingComment    String?       
+  aiRatedAt          DateTime?     
   
   device             Device?                    @relation(fields: [deviceId], references: [id])
   technician         User?                      @relation("TechnicianSessions", fields: [technicianId], references: [id])
