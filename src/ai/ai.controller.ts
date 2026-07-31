@@ -36,6 +36,23 @@ export class AiController {
     );
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Post('sessions/:sessionId/rating')
+  async rateAiSession(
+    @Req() req,
+    @Param('sessionId', ParseIntPipe) sessionId: number,
+    @Body() body: { rating: number; comment?: string },
+  ) {
+    const userId = Number(req.user?.id || req.user?.userId || req.user?.sub);
+    if (!userId || isNaN(userId)) {
+      throw new BadRequestException('Lỗi xác thực: Không tìm thấy ID người dùng.');
+    }
+    if (typeof body.rating !== 'number' || body.rating < 1 || body.rating > 5) {
+      throw new BadRequestException('rating phải là số nguyên từ 1 đến 5.');
+    }
+    return this.aiService.rateAiSession(userId, sessionId, body.rating, body.comment);
+  }
+
   // ─────────────────────────────────────────────────────────────────
   // POST /ai/tech-chat  — Dành riêng cho THỢ KỸ THUẬT (SmartElec Pro)
   // Prompt ADVANCED, RAG không giới hạn, không có booking flow

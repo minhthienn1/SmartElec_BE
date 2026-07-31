@@ -1240,6 +1240,28 @@ Hãy phân tích và trả lời với tư cách SmartElec Pro — trợ lý k�
     return { success: true };
   }
 
+  async rateAiSession(userId: number, sessionId: number, rating: number, comment?: string) {
+    const session = await this.prisma.chatSession.findUnique({ where: { id: sessionId } });
+    if (!session || session.userId !== userId) {
+      throw new HttpException(
+        'Không tìm thấy phiên tư vấn hoặc bạn không có quyền đánh giá.',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    await this.prisma.chatSession.update({
+      where: { id: sessionId },
+      data: {
+        aiRating: rating,
+        aiRatingComment: comment?.trim() || null,
+        aiRatedAt: new Date(),
+      },
+    });
+
+    this.logger.log(`⭐ User #${userId} đã đánh giá session #${sessionId}: ${rating} sao`);
+    return { success: true };
+  }
+
   async saveFeedback(logId: number, feedback: 'LIKE' | 'DISLIKE') {
     const log = await this.prisma.aiReasoningLog.findUnique({ where: { id: logId } });
     if (!log) {
