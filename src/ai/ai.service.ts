@@ -417,7 +417,13 @@ export class AiService {
 
       let deviceContext = '';
       if (devices.length > 0) {
-        deviceContext = `\n[THÔNG TIN THIẾT BỊ KHÁCH HÀNG]: Khách hàng có: ${devices.map((d) => `${d.brandName} ${d.category}`).join(', ')}`;
+        deviceContext = `\n[THÔNG TIN THIẾT BỊ ĐÃ ĐĂNG KÝ CỦA KHÁCH (THAM KHẢO)]: Khách hàng có: ${devices.map((d) => `${d.brandName} ${d.category}`).join(', ')}. LƯU Ý QUAN TRỌNG: KHÔNG TỰ ĐỘNG KHẲNG ĐỊNH khách đang hỏi về các thiết bị này trừ khi khách xác nhận. Hãy hỏi lại để xác nhận (ví dụ: "Có phải bạn đang gặp sự cố với chiếc ${devices[0]?.category} ${devices[0]?.brandName} không ạ?").`;
+      }
+      
+      if (sessionContext?.deviceType && !sessionContext?.device) {
+        deviceContext += `\n[THIẾT BỊ KHÁCH ĐANG CHỌN ĐỂ CHAT]: ${sessionContext.deviceType}. (Hãy hỏi thêm về thương hiệu, tình trạng. Đừng tự mặc định là thiết bị đã đăng ký ở trên nếu khách chưa xác nhận).`;
+      } else if (sessionContext?.device) {
+        deviceContext += `\n[THIẾT BỊ CHÍNH XÁC KHÁCH ĐANG HỎI]: ${sessionContext.device.brandName} ${sessionContext.device.category}.`;
       }
 
       // ── 2.5. TRUY XUẤT KIẾN THỨC RAG ────────────────────────────────
