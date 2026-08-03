@@ -117,7 +117,7 @@ export class ChatHistoryService {
    */
   async getUserHistory(userId: number) {
     try {
-      return await this.prisma.chatSession.findMany({
+      const sessions = await this.prisma.chatSession.findMany({
         where: {
           userId,
           sessionType: 'AI_DIAGNOSIS', // Lọc chỉ lấy các phiên chat với AI (loại trừ DIRECT_BOOKING)
@@ -131,7 +131,49 @@ export class ChatHistoryService {
           symptom: true,
           status: true,
           sessionType: true,
+          aiReasoningLogs: {
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            select: { nextState: true },
+          },
         },
+      });
+
+      return sessions.map(session => {
+        let displayStatus = 'CANCELLED';
+
+        if (session.status !== 'AI_CONSULTING') {
+          displayStatus = 'BOOKED';
+        } else {
+          const latestLog = session.aiReasoningLogs?.[0];
+          let phase = 'COLLECTING';
+          
+          if (latestLog?.nextState) {
+            try {
+              const nextStateParsed = typeof latestLog.nextState === 'string' 
+                ? JSON.parse(latestLog.nextState) 
+                : latestLog.nextState as any;
+              
+              if (nextStateParsed && nextStateParsed.phase) {
+                phase = nextStateParsed.phase;
+              }
+            } catch (e) {
+              console.error('Lỗi parse nextState:', e);
+            }
+          }
+
+          if (phase === 'DIAGNOSING' || phase === 'READY_TO_BOOK') {
+            displayStatus = 'CONSULTED';
+          } else {
+            displayStatus = 'CONSULTING';
+          }
+        }
+
+        const { aiReasoningLogs, ...rest } = session;
+        return {
+          ...rest,
+          displayStatus,
+        };
       });
     } catch (error) {
       console.error('❌ LỖI DATABASE PRISMA:', error);
