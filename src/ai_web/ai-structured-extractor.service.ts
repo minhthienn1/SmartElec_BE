@@ -89,6 +89,11 @@ export class AiStructuredExtractorService {
       promptLabel: 'bếp từ',
       aliases: ['bếp từ', 'bep tu'],
     },
+    {
+      label: 'Máy sưởi',
+      promptLabel: 'máy sưởi',
+      aliases: ['máy sưởi', 'may suoi', 'quạt sưởi', 'quat suoi', 'đèn sưởi', 'den suoi'],
+    },
   ];
 
   constructor(private readonly aiGeminiService: AiGeminiService) {}
@@ -216,6 +221,9 @@ export class AiStructuredExtractorService {
     }
 
     const text = this.normalizeText(input.originalText);
+    const isContextCollectionPhase =
+      input.prevState?.phase === 'ASKING_CONTEXT' ||
+      input.prevState?.contextQuestionsAsked === true;
     const isLongMessage = input.originalText.trim().length >= 80;
     const hasMultipleClauses =
       /[,;:]|\bnhung\b|\bma\b|\bvan\b|\broi\b|\bxong\b|\bhinh nhu\b/u.test(text);
@@ -223,9 +231,16 @@ export class AiStructuredExtractorService {
       /\bkhong\b|\bhu\b|\bloi\b|\bvan de\b|\bmat\b|\blanh\b|\bnong\b|\bnuoc\b|\bgio\b|\bden\b|\bquay\b|\bkhong thoat\b|\bhut yeu\b/u.test(
         text,
       );
+    const hasFollowupAnswerSignal =
+      /\bco\b|\bcon\b|\bvan\b|\blen nguon\b|\bchay\b|\bkeu\b|\bmui\b|\bro\b|\bluc\b|\bkhi\b|\btu\b|\bphan nao\b/u.test(
+        text,
+      );
 
     return (
       hasMultipleDeviceSignals ||
+      (isContextCollectionPhase &&
+        input.originalText.trim().length >= 8 &&
+        hasFollowupAnswerSignal) ||
       (hasProblemSignal &&
         (isLongMessage || hasMultipleClauses || !hasRuleDevice || !hasRuleSymptom))
     );

@@ -122,6 +122,15 @@ export class AiGuidedDiagnosisService {
     const detectedDevice = this.cleanText(
       input.intentGate?.detectedDeviceLabel || previousState.device,
     );
+    const canonicalPreviousDevice = this.normalizeDeviceKey(previousDevice);
+    const canonicalDetectedDevice = this.normalizeDeviceKey(detectedDevice);
+    const stableDetectedDevice =
+      previousDevice &&
+      detectedDevice &&
+      canonicalPreviousDevice &&
+      canonicalPreviousDevice === canonicalDetectedDevice
+        ? previousDevice
+        : detectedDevice;
     const detectedSymptom = this.normalizeCanonicalSymptom(
       input.intentGate?.detectedIssueLabel ||
         input.intentGate?.detectedErrorCode ||
@@ -134,7 +143,13 @@ export class AiGuidedDiagnosisService {
       intentCategory: input.intentGate?.supportedDeviceCategory,
     });
 
-    if (previousDevice && detectedDevice && previousDevice !== detectedDevice) {
+    if (
+      previousDevice &&
+      detectedDevice &&
+      canonicalPreviousDevice &&
+      canonicalDetectedDevice &&
+      canonicalPreviousDevice !== canonicalDetectedDevice
+    ) {
       return this.buildDirectResponse({
         text: `Phiên này đang tư vấn cho ${previousDevice}. Vấn đề ${detectedDevice} nên tạo phiên mới để không lẫn thông tin chẩn đoán.`,
         state: {
@@ -230,7 +245,7 @@ export class AiGuidedDiagnosisService {
 
     const baseState = {
       ...previousState,
-      device: detectedDevice,
+      device: stableDetectedDevice,
       symptom: detectedSymptom || this.normalizeCanonicalSymptom(previousSymptom) || null,
       deviceCategory: this.toKnownCategory(deviceCategory),
       contextQuestionSet: questionSet,
@@ -263,9 +278,22 @@ export class AiGuidedDiagnosisService {
       });
     }
 
+    if (!detectedSymptom && previousDevice) {
+      return this.buildDirectResponse({
+        text: this.buildMissingSymptomPrompt(
+          stableDetectedDevice,
+          this.toKnownCategory(deviceCategory),
+        ),
+        state: {
+          ...baseState,
+          phase: 'COLLECTING',
+        },
+      });
+    }
+
     if (!detectedSymptom) {
       return this.buildDirectResponse({
-        text: `Mình đã ghi nhận thiết bị là ${detectedDevice}. Bạn mô tả rõ hơn giúp mình lỗi đang gặp là gì nhé.`,
+         text: `Mình đã ghi nhận thiết bị là ${stableDetectedDevice}. Bạn mô tả rõ hơn giúp mình lỗi đang gặp là gì nhé.`,
         state: {
           ...baseState,
           phase: 'COLLECTING',
@@ -278,6 +306,10 @@ export class AiGuidedDiagnosisService {
       this.cleanText(mergedContextAnswers[key]),
     );
     const hasCollectedContext = Object.keys(mergedContextAnswers).length > 0;
+    const canUseRagNow = this.canUseRagNow({
+      symptom: detectedSymptom,
+      contextAnswers: mergedContextAnswers,
+    });
 
     if (!questionSetMatches && hasCollectedContext && followupKey) {
       const followupQuestion =
@@ -296,7 +328,7 @@ export class AiGuidedDiagnosisService {
       }
     }
 
-    if (!questionSetMatches && hasCollectedContext && hasMinimumContext) {
+    if (!questionSetMatches && hasCollectedContext && canUseRagNow) {
       return {
         action: 'USE_RAG',
         nextState: {
@@ -325,6 +357,25 @@ export class AiGuidedDiagnosisService {
       });
     }
 
+    if (followupKey && previousState.askedFollowupKey === followupKey) {
+      const repeatedFollowupQuestion =
+        this.getQuestionTemplate(questionSet).followups[followupKey];
+
+      if (repeatedFollowupQuestion) {
+        return this.buildDirectResponse({
+          text: this.prependSafetyIfNeeded(
+            this.buildRetryFollowupPrompt(repeatedFollowupQuestion),
+            safetyWarning,
+          ),
+          state: {
+            ...baseState,
+            phase: 'ASKING_CONTEXT',
+            askedFollowupKey: followupKey,
+          },
+        });
+      }
+    }
+
     if (followupKey) {
       const followupQuestion =
         this.getQuestionTemplate(questionSet).followups[followupKey];
@@ -346,7 +397,7 @@ export class AiGuidedDiagnosisService {
       }
     }
 
-    if (hasMinimumContext) {
+    if (canUseRagNow) {
       return {
         action: 'USE_RAG',
         nextState: {
@@ -506,7 +557,10 @@ export class AiGuidedDiagnosisService {
       device.includes('tủ đông') ||
       device.includes('máy nước nóng') ||
       device.includes('bình nóng lạnh') ||
-      device.includes('máy sấy')
+      device.includes('máy sấy') ||
+      device.includes('máy sưởi') ||
+      device.includes('quạt sưởi') ||
+      device.includes('đèn sưởi')
     ) {
       return 'COOLING_HEATING';
     }
@@ -573,8 +627,30 @@ export class AiGuidedDiagnosisService {
     category: DeviceCategory,
     symptom: string | null,
   ) {
-    const lowerDevice = device.toLowerCase();
-    const lowerSymptom = this.normalizeCanonicalSymptom(symptom).toLowerCase();
+    const normalizedDevice = this.normalizeText(device);
+    const normalizedSymptom = this.normalizeText(
+      this.normalizeCanonicalSymptom(symptom),
+    );
+    const lowerDevice = normalizedDevice;
+    const lowerSymptom = normalizedSymptom;
+
+    if (
+      category === 'COOLING_HEATING' &&
+      (normalizedDevice.includes('dieu hoa') ||
+        normalizedDevice.includes('may lanh')) &&
+      (normalizedSymptom.includes('khong lanh') ||
+        normalizedSymptom.includes('khong mat'))
+    ) {
+      return 'COOLING_HEATING::AIR_CONDITIONER_NOT_COOL';
+    }
+
+    if (
+      category === 'COOLING_HEATING' &&
+      (normalizedDevice.includes('tu lanh') ||
+        normalizedDevice.includes('tu dong'))
+    ) {
+      return 'COOLING_HEATING::REFRIGERATOR_COOLING';
+    }
 
     if (
       category === 'COOLING_HEATING' &&
@@ -699,6 +775,8 @@ export class AiGuidedDiagnosisService {
         followups: {
           operationStatus:
             'Thiết bị hiện còn lên nguồn hoặc hoạt động được phần nào không?',
+          errorCode:
+            'Có mã lỗi, đèn nhấp nháy, tiếng lạ, mùi khét hoặc dấu hiệu bất thường nào rõ hơn không?',
           whenHappens: 'Lỗi bắt đầu từ khi nào và có xảy ra liên tục không?',
         },
       },
@@ -719,6 +797,44 @@ export class AiGuidedDiagnosisService {
     ].join('\n');
   }
 
+  private buildMissingSymptomPrompt(
+    device: string,
+    deviceCategory: DeviceCategory | null,
+  ) {
+    const examples = this.getSymptomExamples(deviceCategory);
+
+    return [
+      `MÃ¬nh Ä‘Ã£ ghi nháº­n thiáº¿t bá»‹ lÃ  ${device}.`,
+      'NhÆ°ng mÃ¬nh chÆ°a hiá»ƒu rá» lá»—i cá»¥ thá»ƒ Ä‘ang gáº·p lÃ  gÃ¬.',
+      examples
+        ? `Báº¡n mÃ´ táº£ theo kiá»ƒu gáº§n nháº¥t giÃºp mÃ¬nh, vÃ­ dá»¥: ${examples}.`
+        : 'Báº¡n mÃ´ táº£ rÃµ hÆ¡n giÃºp mÃ¬nh hiá»‡n tÆ°á»£ng Ä‘ang gáº·p lÃ  gÃ¬ nhÃ©.',
+    ].join(' ');
+  }
+
+  private getSymptomExamples(deviceCategory: DeviceCategory | null) {
+    switch (deviceCategory) {
+      case 'COOLING_HEATING':
+        return 'khÃ´ng láº¡nh, khÃ´ng nÃ³ng, kÃªu to, rÃ² nÆ°á»›c hoáº·c cÃ³ mÃ¹i khÃ©t';
+      case 'WATER_APPLIANCE':
+        return 'khÃ´ng cáº¥p nÆ°á»›c, khÃ´ng xáº£ nÆ°á»›c, khÃ´ng váº¯t, rÃ² nÆ°á»›c hoáº·c khÃ´ng lÃªn nguá»“n';
+      case 'COOKING_APPLIANCE':
+        return 'khÃ´ng nÃ³ng, khÃ´ng lÃªn nguá»“n, bÃ¡o lá»—i, cÃ³ mÃ¹i khÃ©t hoáº·c cháº¡y yáº¿u';
+      case 'DISPLAY_AUDIO':
+        return 'khÃ´ng lÃªn hÃ¬nh, khÃ´ng cÃ³ tiáº¿ng, sá»c mÃ n, nháº¥p nhÃ¡y hoáº·c máº¥t káº¿t ná»‘i';
+      case 'CLEANING_APPLIANCE':
+        return 'hÃºt yáº¿u, khÃ´ng cháº¡y, pin khÃ´ng sáº¡c, káº¹t bÃ n cháº£i hoáº·c bÃ¡o lá»—i';
+      case 'AIR_WATER_TREATMENT':
+        return 'khÃ´ng lá»c, khÃ´ng phun sÆ°Æ¡ng, chÃ¡y mÃ¹i, rÃ² nÆ°á»›c hoáº·c bÃ¡o lá»—i';
+      default:
+        return null;
+    }
+  }
+
+  private buildRetryFollowupPrompt(followupQuestion: string) {
+    return `MÃ¬nh chÆ°a Ä‘á»c ra rá» Ã½ báº¡n á»Ÿ chi tiáº¿t nÃ y. Báº¡n tráº£ lá»i giÃºp mÃ¬nh rá» hÆ¡n: ${followupQuestion}`;
+  }
+
   private extractContextAnswers(originalText: string): ContextAnswers {
     const normalized = this.normalizeText(originalText);
     const errorCodeMatch = originalText.match(/\b[A-Z]{1,3}\s?\d{1,3}\b/i);
@@ -729,7 +845,7 @@ export class AiGuidedDiagnosisService {
     }
 
     if (
-      /dan lanh co gio|cuc nong khong chay|cuc nong co chay|khong len nguon|van chay|hut yeu|khong xa nuoc|khong cap nuoc|den sang|van co den|dia quay|van quay/u.test(
+      /dan lanh co gio|cuc nong khong chay|cuc nong co chay|khong len nguon|(con|van) len nguon|\blen nguon\b|(con|van) chay|hoat dong duoc|hut yeu|khong xa nuoc|khong cap nuoc|den sang|van co den|dia quay|van quay/u.test(
         normalized,
       )
     ) {
@@ -780,6 +896,12 @@ export class AiGuidedDiagnosisService {
     }
     if (/khong len nguon/u.test(normalized)) {
       segments.push('không lên nguồn');
+    }
+    if (/\b(con|van) len nguon\b|\blen nguon\b|hoat dong duoc/u.test(normalized)) {
+      segments.push('còn lên nguồn');
+    }
+    if (/\b(con|van) chay\b/u.test(normalized)) {
+      segments.push('vẫn chạy');
     }
     if (/den sang|van co den/u.test(normalized)) {
       segments.push('đèn vẫn sáng');
@@ -876,6 +998,40 @@ export class AiGuidedDiagnosisService {
     return null;
   }
 
+  private canUseRagNow(input: {
+    symptom: string | null;
+    contextAnswers: ContextAnswers;
+  }) {
+    const hasMinimumContext = MINIMUM_RAG_CONTEXT_KEYS.some((key) =>
+      this.cleanText(input.contextAnswers[key]),
+    );
+
+    if (!hasMinimumContext) {
+      return false;
+    }
+
+    if (!this.isGenericSymptom(input.symptom)) {
+      return true;
+    }
+
+    return this.hasStrongDiagnosticContext(input.contextAnswers);
+  }
+
+  private isGenericSymptom(symptom: string | null) {
+    const normalized = this.normalizeText(this.cleanText(symptom));
+    return /^(bi hu|bi loi|co van de|hong|hong hoc)$/.test(normalized);
+  }
+
+  private hasStrongDiagnosticContext(contextAnswers: ContextAnswers) {
+    return Boolean(
+      this.cleanText(contextAnswers.errorCode) ||
+        this.cleanText(contextAnswers.abnormalSigns) ||
+        this.cleanText(contextAnswers.whenHappens) ||
+        this.cleanText(contextAnswers.safetySigns) ||
+        this.cleanText(contextAnswers.outdoorUnitStatus),
+    );
+  }
+
   private buildRagQuery(input: {
     device: string;
     symptom: string;
@@ -933,13 +1089,28 @@ export class AiGuidedDiagnosisService {
       return 'Không nóng';
     }
 
+    if (/khong suoi|khong am|chi pha gio|pha gio nhe/.test(normalized)) {
+      return 'Không sưởi được';
+    }
+
     return symptom;
   }
 
   private detectSafetySigns(normalizedText: string) {
-    return SAFETY_PATTERNS.filter(([pattern]) => pattern.test(normalizedText)).map(
-      ([, label]) => label,
-    );
+    const detected = SAFETY_PATTERNS.filter(([pattern]) =>
+      pattern.test(normalizedText),
+    ).map(([, label]) => label);
+
+    if (
+      /\bbi chay\b|\bdang chay\b|\bchay roi\b|\bchay khet\b/u.test(
+        normalizedText,
+      ) &&
+      !detected.includes('CÃ³ dáº¥u hiá»‡u chÃ¡y')
+    ) {
+      detected.push('CÃ³ dáº¥u hiá»‡u chÃ¡y');
+    }
+
+    return detected;
   }
 
   private isContradictoryDeviceSymptom(
@@ -968,6 +1139,20 @@ export class AiGuidedDiagnosisService {
       .replace(/[^\p{L}\p{N}\s]/gu, ' ')
       .replace(/\s+/g, ' ')
       .trim();
+  }
+
+  private normalizeDeviceKey(value: string | null) {
+    const normalized = this.normalizeText(value ?? '');
+
+    if (!normalized) {
+      return '';
+    }
+
+    if (normalized === 'may lanh' || normalized === 'dieu hoa') {
+      return 'air_conditioner';
+    }
+
+    return normalized;
   }
 
   private isPlainObject(value: unknown): value is Record<string, unknown> {

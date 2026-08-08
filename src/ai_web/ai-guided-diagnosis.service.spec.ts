@@ -198,6 +198,33 @@ describe('AiGuidedDiagnosisService', () => {
     );
   });
 
+  it('không coi Máy lạnh và Điều hòa là hai thiết bị khác nhau', () => {
+    const result = service.resolveNextStep({
+      originalText: 'máy lạnh nhà tui bị cháy',
+      prevState: {
+        device: 'Máy lạnh',
+        symptom: 'Có dấu hiệu cháy',
+        deviceCategory: 'COOLING_HEATING',
+        phase: 'COLLECTING',
+        risk: 'UNKNOWN',
+        flags: [],
+      },
+      intentGate: {
+        intent: 'TECHNICAL_SPECIFIC',
+        detectedDeviceLabel: 'Điều hòa',
+        detectedIssueLabel: 'Có dấu hiệu cháy',
+        supportedDeviceCategory: 'COOLING_HEATING',
+      },
+    });
+
+    expect(result.action).toBe('DIRECT_RESPONSE');
+    expect(result.parsedResponse?.text).not.toContain('tạo phiên mới');
+    expect(result.parsedResponse?.state?.device).toBe('Máy lạnh');
+    expect(result.parsedResponse?.state?.flags).not.toContain(
+      'DEVICE_SWITCH_DETECTED',
+    );
+  });
+
   it('ưu tiên cảnh báo an toàn trước khi hỏi context', () => {
     const result = service.resolveNextStep({
       originalText: 'lò vi sóng không nóng, có mùi khét và tia lửa',
@@ -216,5 +243,104 @@ describe('AiGuidedDiagnosisService', () => {
     expect(result.parsedResponse?.state?.contextAnswers?.safetySigns).toContain(
       'mùi khét',
     );
+  });
+
+  it('coi "bị cháy" là tín hiệu an toàn và trả cảnh báo ngay', () => {
+    const result = service.resolveNextStep({
+      originalText: 'máy lạnh nhà tui bị cháy',
+      prevState: null,
+      intentGate: {
+        intent: 'TECHNICAL_SPECIFIC',
+        detectedDeviceLabel: 'Điều hòa',
+        detectedIssueLabel: 'Có dấu hiệu cháy',
+        supportedDeviceCategory: 'COOLING_HEATING',
+      },
+    });
+
+    expect(result.action).toBe('DIRECT_RESPONSE');
+    expect(result.parsedResponse?.state?.risk).toBe('RED');
+    expect(result.parsedResponse?.text.startsWith('Bạn nên ngắt nguồn')).toBe(true);
+    expect(result.parsedResponse?.state?.contextAnswers?.safetySigns).toBeTruthy();
+    expect(result.parsedResponse?.text).not.toContain('1.');
+  });
+
+  it('không nhảy USE_RAG quá sớm khi symptom còn quá chung như bị hư', () => {
+    const result = service.resolveNextStep({
+      originalText: 'còn lên nguồn nhưng mà nguồn nó chạy rất rè',
+      prevState: {
+        device: 'Điều hòa',
+        symptom: 'Bị hư',
+        deviceCategory: 'COOLING_HEATING',
+        phase: 'ASKING_CONTEXT',
+        risk: 'UNKNOWN',
+        flags: [],
+        contextQuestionsAsked: true,
+        contextQuestionSet: 'COOLING_HEATING::GENERIC',
+        askedFollowupKey: 'operationStatus',
+        contextAnswers: {},
+      },
+      intentGate: {
+        intent: 'TECHNICAL_VAGUE',
+        detectedDeviceLabel: null,
+        detectedIssueLabel: null,
+        supportedDeviceCategory: 'UNKNOWN',
+      },
+    });
+
+    expect(result.action).toBe('DIRECT_RESPONSE');
+    expect(result.parsedResponse?.state?.contextAnswers?.operationStatus).toContain(
+      'còn lên nguồn',
+    );
+    expect(result.parsedResponse?.state?.askedFollowupKey).toBe('errorCode');
+    expect(result.parsedResponse?.text).toContain('dấu hiệu bất thường');
+  });
+  it('khong hoi lai thiet bi neu session da co device nhung symptom con mo ho', () => {
+    const result = service.resolveNextStep({
+      originalText: 'no bi khung khung, kho hieu qua',
+      prevState: {
+        device: 'May giat',
+        phase: 'COLLECTING',
+        risk: 'UNKNOWN',
+        flags: [],
+      },
+      intentGate: {
+        intent: 'TECHNICAL_VAGUE',
+        detectedDeviceLabel: null,
+        detectedIssueLabel: null,
+        supportedDeviceCategory: 'UNKNOWN',
+      },
+    });
+
+    expect(result.action).toBe('DIRECT_RESPONSE');
+    expect(result.parsedResponse?.text).toContain('May giat');
+    expect(result.parsedResponse?.text).not.toContain('thiet bi nao dang gap loi');
+  });
+
+  it('hoi lai mem hon khi user tra loi mo ho cho cung 1 follow-up', () => {
+    const result = service.resolveNextStep({
+      originalText: 'no cu la la ay',
+      prevState: {
+        device: 'Dieu hoa',
+        symptom: 'Khong lanh',
+        deviceCategory: 'COOLING_HEATING',
+        phase: 'ASKING_CONTEXT',
+        risk: 'UNKNOWN',
+        flags: [],
+        contextQuestionsAsked: true,
+        contextQuestionSet: 'COOLING_HEATING::AIR_CONDITIONER_NOT_COOL',
+        contextAnswers: {},
+        askedFollowupKey: 'errorCode',
+      },
+      intentGate: {
+        intent: 'TECHNICAL_VAGUE',
+        detectedDeviceLabel: null,
+        detectedIssueLabel: null,
+        supportedDeviceCategory: 'UNKNOWN',
+      },
+    });
+
+    expect(result.action).toBe('DIRECT_RESPONSE');
+    expect(result.parsedResponse?.text).toContain('Báº¡n tráº£ lá»i giÃºp mÃ¬nh');
+    expect(result.parsedResponse?.text).not.toContain('thiet bi nao dang gap loi');
   });
 });

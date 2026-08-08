@@ -97,12 +97,20 @@ export class AiResponseBuilderService {
         }
 
         if (intentGate.intent === 'OUT_OF_SCOPE_TECHNICAL') {
+            const previousState = prevState || SAFE_FALLBACK_STATE;
             return {
                 text: intentGate.directResponse,
                 state: {
-                    ...baseState,
+                    ...previousState,
+                    device: prevState?.device || null,
+                    deviceCategory: prevState?.deviceCategory || null,
+                    symptom: prevState?.symptom || null,
                     phase: 'COLLECTING',
-                    risk: 'UNKNOWN',
+                    risk: prevState?.risk || 'UNKNOWN',
+                    flags: [
+                        ...(Array.isArray(prevState?.flags) ? prevState.flags : []),
+                        'OUT_OF_SCOPE_TECHNICAL',
+                    ],
                 },
                 is_booking_triggered: false,
             };

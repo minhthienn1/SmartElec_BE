@@ -58,6 +58,23 @@ type DeviceRule = {
   keywords: string[];
 };
 
+const SUPPORTED_WEB_DEVICE_KEYWORDS = new Set([
+  'may lanh',
+  'dieu hoa',
+  'tu lanh',
+  'cai tu',
+  'tu dong',
+  'may giat',
+  'may rua bat',
+  'may rua chen',
+  'bep tu',
+  'lo vi song',
+  'microwave',
+  'may suoi',
+  'quat suoi',
+  'den suoi',
+]);
+
 const DEVICE_RULES: DeviceRule[] = [
   { category: 'COOLING_HEATING', label: 'Điều hòa', keywords: ['may lanh', 'dieu hoa'] },
   { category: 'COOLING_HEATING', label: 'Tủ lạnh', keywords: ['tu lanh', 'cai tu', 'tu dong'] },
@@ -85,6 +102,7 @@ const DEVICE_RULES: DeviceRule[] = [
   { category: 'AIR_WATER_TREATMENT', label: 'Máy lọc không khí', keywords: ['may loc khong khi'] },
   { category: 'AIR_WATER_TREATMENT', label: 'Máy hút ẩm', keywords: ['may hut am'] },
   { category: 'AIR_WATER_TREATMENT', label: 'Máy tạo ẩm', keywords: ['may tao am'] },
+  { category: 'COOLING_HEATING', label: 'Máy sưởi', keywords: ['may suoi', 'quat suoi', 'den suoi'] },
 ];
 
 @Injectable()
@@ -98,21 +116,29 @@ export class AiIntentGateService {
     const supportedDeviceCategory = detectedRule?.category ?? 'UNKNOWN';
     const outOfScopeDeviceCategory =
       this.inferOutOfScopeDeviceCategory(expandedText);
+    const unsupportedDeviceLabel =
+      outOfScopeDeviceCategory === null && supportedDeviceCategory === 'UNKNOWN'
+        ? this.inferUnsupportedDeviceLabel(expandedText)
+        : null;
     const detectedDeviceLabel =
       detectedRule?.label ||
+      unsupportedDeviceLabel ||
       this.inferDeviceLabelFromOutOfScope(outOfScopeDeviceCategory);
     const detectedBrand = this.inferBrand(expandedText);
     const detectedErrorCode = this.inferErrorCode(originalText, expandedText);
     const detectedIssueLabel = this.inferIssueLabel(expandedText);
     const isEmergency = this.isEmergencyIntent(originalText, expandedText);
     const isExplicitBooking = this.hasExplicitBookingPhrase(expandedText);
+    const isServiceScopeQuestion = this.isServiceScopeQuestion(expandedText);
     const isOutOfScope =
-      outOfScopeDeviceCategory !== null && supportedDeviceCategory === 'UNKNOWN';
+      supportedDeviceCategory === 'UNKNOWN' &&
+      (outOfScopeDeviceCategory !== null || unsupportedDeviceLabel !== null);
 
     const isTechnicalSpecific = this.isTechnicalSpecificIntent({
       expandedText,
       supportedDeviceCategory,
       outOfScopeDeviceCategory,
+      unsupportedDeviceLabel,
       detectedErrorCode,
       detectedIssueLabel,
     });
@@ -120,11 +146,11 @@ export class AiIntentGateService {
     const isTechnicalVague = this.isTechnicalVagueIntent({
       supportedDeviceCategory,
       outOfScopeDeviceCategory,
+      unsupportedDeviceLabel,
       detectedIssueLabel,
       isTechnicalSpecific,
       expandedText,
     });
-
     const hasProblemContext =
       isEmergency ||
       isExplicitBooking ||
@@ -141,7 +167,9 @@ export class AiIntentGateService {
       reasons.push('MESSAGE_HAS_MOJIBAKE_SIGNAL');
     }
 
-    if (isEmergency) {
+    if (isServiceScopeQuestion) {
+      reasons.push('MATCHED_SERVICE_SCOPE_QUESTION');
+    } else if (isEmergency) {
       intent = 'EMERGENCY';
       reasons.push('MATCHED_EMERGENCY');
     } else if (isExplicitBooking) {
@@ -183,6 +211,7 @@ export class AiIntentGateService {
       shouldUseRag: intent === 'TECHNICAL_SPECIFIC',
       shouldAskClarification: intent === 'TECHNICAL_VAGUE',
       shouldReturnDirectResponse:
+        isServiceScopeQuestion ||
         intent === 'GREETING' ||
         intent === 'EMERGENCY' ||
         intent === 'EXPLICIT_BOOKING' ||
@@ -190,6 +219,7 @@ export class AiIntentGateService {
         hasMojibakeSignal,
       directResponse: this.buildDirectResponse({
         intent,
+        isServiceScopeQuestion,
         hasMojibakeSignal,
         detectedDeviceLabel,
         detectedIssueLabel,
@@ -246,8 +276,13 @@ export class AiIntentGateService {
 
   private detectDeviceRule(expandedText: string) {
     return DEVICE_RULES.find((rule) =>
+      this.isSupportedWebDeviceRule(rule) &&
       rule.keywords.some((keyword) => this.hasWholeWord(expandedText, keyword)),
     );
+  }
+
+  private isSupportedWebDeviceRule(rule: DeviceRule): boolean {
+    return rule.keywords.some((keyword) => SUPPORTED_WEB_DEVICE_KEYWORDS.has(keyword));
   }
 
   private isGreetingIntent(
@@ -271,6 +306,18 @@ export class AiIntentGateService {
       'dat lich',
       'toi muon dat tho',
       'toi can dat tho',
+    ]);
+  }
+
+  private isServiceScopeQuestion(expandedText: string): boolean {
+    return this.includesAnyPhrase(expandedText, [
+      'sua chua thiet bi gi',
+      'sua duoc thiet bi gi',
+      'ho tro thiet bi gi',
+      'ben ban sua gi',
+      'ben ban sua chua gi',
+      'website sua chua gi',
+      'co huong dan lam',
     ]);
   }
 
@@ -340,6 +387,7 @@ export class AiIntentGateService {
     expandedText: string;
     supportedDeviceCategory: SupportedDeviceCategory;
     outOfScopeDeviceCategory: OutOfScopeDeviceCategory | null;
+    unsupportedDeviceLabel: string | null;
     detectedErrorCode: string | null;
     detectedIssueLabel: string | null;
   }): boolean {
@@ -349,7 +397,8 @@ export class AiIntentGateService {
 
     const hasDevice =
       input.supportedDeviceCategory !== 'UNKNOWN' ||
-      input.outOfScopeDeviceCategory !== null;
+      input.outOfScopeDeviceCategory !== null ||
+      Boolean(input.unsupportedDeviceLabel);
 
     if (hasDevice && input.detectedIssueLabel) {
       return true;
@@ -371,6 +420,10 @@ export class AiIntentGateService {
       'do con sung nuoc',
       'quan ao con uot',
       'do con uot',
+      'khong suoi',
+      'khong am',
+      'chi pha gio',
+      'pha gio nhe',
       'khong xa',
       'khong cap nuoc',
       'chay nuoc',
@@ -406,6 +459,7 @@ export class AiIntentGateService {
   private isTechnicalVagueIntent(input: {
     supportedDeviceCategory: SupportedDeviceCategory;
     outOfScopeDeviceCategory: OutOfScopeDeviceCategory | null;
+    unsupportedDeviceLabel: string | null;
     detectedIssueLabel: string | null;
     isTechnicalSpecific: boolean;
     expandedText: string;
@@ -416,7 +470,8 @@ export class AiIntentGateService {
 
     const hasDevice =
       input.supportedDeviceCategory !== 'UNKNOWN' ||
-      input.outOfScopeDeviceCategory !== null;
+      input.outOfScopeDeviceCategory !== null ||
+      Boolean(input.unsupportedDeviceLabel);
 
     if (!hasDevice && input.detectedIssueLabel) {
       return true;
@@ -490,6 +545,17 @@ export class AiIntentGateService {
       }
     }
 
+    if (
+      this.includesAnyPhrase(expandedText, [
+        'khong suoi',
+        'khong am',
+        'chi pha gio',
+        'pha gio nhe',
+      ])
+    ) {
+      return 'Không sưởi được';
+    }
+
     const issueMap: Array<[string[], string]> = [
       [['khong lanh', 'khong mat', 'bi lanh'], 'Không lạnh'],
       [['khong nong'], 'Không nóng'],
@@ -529,8 +595,105 @@ export class AiIntentGateService {
     return null;
   }
 
+  private inferUnsupportedDeviceLabelLegacy(expandedText: string): string | null {
+    const unsupportedDeviceMap: Array<[string[], string]> = [
+      [['may quat', 'quat dien', 'quat may', 'quat ban', 'quat dung', 'quat treo'], 'Máy quạt'],
+      [['may say toc', 'may uon toc', 'may ep toc'], 'Máy chăm sóc tóc'],
+      [['quat dieu hoa', 'may lam mat mini'], 'Thiết bị làm mát mini'],
+      [['xe may', 'xe moto'], 'Xe máy'],
+      [['xe dap', 'xe dap dien'], 'Xe đạp'],
+    ];
+
+    for (const [keywords, label] of unsupportedDeviceMap) {
+      if (this.includesAnyPhrase(expandedText, keywords)) {
+        return label;
+      }
+    }
+
+    return null;
+  }
+
+  private inferUnsupportedDeviceLabel(expandedText: string): string | null {
+    const legacyLabel = this.inferUnsupportedDeviceLabelLegacy(expandedText);
+    if (legacyLabel) {
+      return legacyLabel;
+    }
+
+    const pattern =
+      /\b((?:may|quat|noi|lo|bep|tu|robot|binh|den|loa|amply|tivi|tv|man hinh|xe)\s+[a-z0-9]+(?:\s+[a-z0-9]+){0,2})\b/i;
+    const match = expandedText.match(pattern);
+
+    if (!match?.[1]) {
+      return null;
+    }
+
+    const phrase = this.trimUnsupportedDevicePhrase(match[1]);
+    if (!phrase) {
+      return null;
+    }
+
+    return this.toDisplayDeviceLabel(phrase);
+  }
+
+  private trimUnsupportedDevicePhrase(value: string): string | null {
+    const stopWords = new Set([
+      'bi',
+      'loi',
+      'hu',
+      'roi',
+      'co',
+      'van',
+      'de',
+      'khong',
+      'hong',
+      'can',
+      'sua',
+      'huong',
+      'dan',
+      'nha',
+      'tui',
+      'minh',
+      'dang',
+      'gap',
+      'voi',
+      'ben',
+      'ban',
+      'thi',
+      'sao',
+      'nao',
+      'vay',
+      'ko',
+      'duoc',
+    ]);
+
+    const tokens = value
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter(Boolean);
+
+    const kept: string[] = [];
+    for (const token of tokens) {
+      if (kept.length > 0 && stopWords.has(token)) {
+        break;
+      }
+      kept.push(token);
+    }
+
+    return kept.length > 1 ? kept.join(' ') : null;
+  }
+
+  private toDisplayDeviceLabel(value: string): string {
+    return value
+      .split(/\s+/)
+      .map((token) =>
+        token.length > 0 ? `${token.charAt(0).toUpperCase()}${token.slice(1)}` : token,
+      )
+      .join(' ');
+  }
+
   private buildDirectResponse(input: {
     intent: AiIntentType;
+    isServiceScopeQuestion?: boolean;
     hasMojibakeSignal: boolean;
     detectedDeviceLabel: string | null;
     detectedIssueLabel: string | null;
@@ -540,6 +703,14 @@ export class AiIntentGateService {
   }): string | null {
     if (input.hasMojibakeSignal) {
       return 'Mình thấy nội dung bạn gửi có vẻ bị lỗi mã hóa tiếng Việt. Bạn nhập lại ngắn gọn theo dạng “thiết bị + tình trạng lỗi” nhé.';
+    }
+
+    if (input.isServiceScopeQuestion) {
+      return [
+        'Hien tai chatbot web SmartElec ho tro tu van cho cac thiet bi noi bo gom may lanh, may giat, tu lanh, lo vi song, may rua bat, bep tu va may suoi.',
+        'Neu thiet bi cua ban nam ngoai danh sach nay, minh se bao ro la website chua ho tro thay vi chan doan ben ngoai nghiep vu.',
+        'Ban cu nhan theo dang "thiet bi + tinh trang loi", vi du: "may lanh khong lanh" hoac "may giat khong vat".',
+      ].join(' ');
     }
 
     if (input.intent === 'GREETING') {
@@ -552,6 +723,19 @@ export class AiIntentGateService {
 
     if (input.intent === 'EXPLICIT_BOOKING') {
       return 'Mình đã ghi nhận bạn muốn đặt thợ. Bạn cho mình xin tình trạng lỗi, địa chỉ, số điện thoại và thời gian mong muốn để mình hỗ trợ tạo yêu cầu nhé.';
+    }
+
+    if (
+      input.intent === 'OUT_OF_SCOPE_TECHNICAL' &&
+      input.outOfScopeDeviceCategory !== 'LAPTOP'
+    ) {
+      return [
+        input.detectedDeviceLabel
+          ? `Hiện tại SmartElec chưa hỗ trợ tư vấn sửa chữa cho ${input.detectedDeviceLabel.toLowerCase()} trên website này.`
+          : 'Hiện tại SmartElec chưa hỗ trợ tư vấn cho thiết bị bạn vừa mô tả trên website này.',
+        'Bên mình hiện tập trung vào các thiết bị điện gia dụng như máy lạnh, máy giặt, tủ lạnh, lò vi sóng, máy nước nóng và một số thiết bị trong nhà khác.',
+        'Bạn có thể đổi sang thiết bị nằm trong danh mục hỗ trợ, hoặc nếu cần mình có thể gợi ý hướng kiểm tra sơ bộ phù hợp hơn.',
+      ].join(' ');
     }
 
     if (input.intent === 'OUT_OF_SCOPE_TECHNICAL') {

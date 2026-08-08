@@ -51,9 +51,15 @@ describe('AiService structured extractor integration', () => {
 
   const service = new AiService(
     prisma as never,
-    configService as never,
     ragRetrievalService as never,
+    aiIntentGateService as never,
+    aiGuidedDiagnosisService as never,
+    aiResponseBuilderService as never,
+    aiConversationPersistenceService as never,
     relatedHistoryService as never,
+    aiRateLimitService as never,
+    aiGeminiService as never,
+    aiStructuredExtractorService as never,
   );
 
   beforeEach(() => {
@@ -252,6 +258,44 @@ describe('AiService structured extractor integration', () => {
     );
   });
 
+  it('không vỡ 500 khi prevState null và extractor vẫn chạy', async () => {
+    aiIntentGateService.analyze.mockReturnValue({
+      detectedDeviceLabel: null,
+      detectedIssueLabel: null,
+      supportedDeviceCategory: 'UNKNOWN',
+      isTechnical: false,
+      shouldReturnDirectResponse: false,
+      shouldUseRag: false,
+      intent: 'NORMAL',
+    });
+    aiStructuredExtractorService.extract.mockResolvedValue(null);
+    aiGuidedDiagnosisService.resolveNextStep.mockReturnValue({
+      action: 'DIRECT_RESPONSE',
+      parsedResponse: {
+        text: 'ok',
+        state: { phase: 'COLLECTING', risk: 'UNKNOWN', flags: [] },
+        is_booking_triggered: false,
+      },
+    });
+    aiConversationPersistenceService.finalizeDirectResponse.mockResolvedValue({
+      text: 'ok',
+    });
+
+    await expect(
+      service.chatWithAI(
+        7,
+        'Nhà tui có cái máy chạy lâu rồi mà giờ thấy có vấn đề, bạn xem giúp được không.',
+        null,
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        text: 'ok',
+      }),
+    );
+
+    expect(aiStructuredExtractorService.extract).toHaveBeenCalledTimes(1);
+  });
+
   it('ưu tiên clarification khi có nhiều thiết bị nhưng chưa rõ thiết bị chính', async () => {
     aiIntentGateService.analyze.mockReturnValue({
       detectedDeviceLabel: 'Điều hòa',
@@ -353,6 +397,179 @@ describe('AiService structured extractor integration', () => {
         intentGate: expect.objectContaining({
           detectedDeviceLabel: 'Điều hòa',
           detectedIssueLabel: 'Không lạnh',
+        }),
+      }),
+    );
+  });
+
+  it('vẫn gọi extractor khi đang hỏi context và user trả lời tự nhiên', async () => {
+    aiConversationPersistenceService.getPreviousState.mockResolvedValue({
+      device: 'Điều hòa',
+      symptom: 'Bị hư',
+      deviceCategory: 'COOLING_HEATING',
+      phase: 'ASKING_CONTEXT',
+      risk: 'UNKNOWN',
+      flags: [],
+      contextQuestionsAsked: true,
+      contextQuestionSet: 'COOLING_HEATING::GENERIC',
+      askedFollowupKey: 'operationStatus',
+      contextAnswers: {},
+    });
+    aiIntentGateService.analyze.mockReturnValue({
+      detectedDeviceLabel: null,
+      detectedIssueLabel: null,
+      supportedDeviceCategory: 'UNKNOWN',
+      isTechnical: true,
+      shouldReturnDirectResponse: false,
+      shouldUseRag: false,
+      intent: 'TECHNICAL_VAGUE',
+    });
+    aiStructuredExtractorService.extract.mockResolvedValue({
+      contextAnswers: {
+        operationStatus: 'còn lên nguồn',
+      },
+      confidence: {
+        context: 0.82,
+        overall: 0.82,
+      },
+    });
+    aiGuidedDiagnosisService.resolveNextStep.mockReturnValue({
+      action: 'DIRECT_RESPONSE',
+      parsedResponse: {
+        text: 'ok',
+        state: { phase: 'ASKING_CONTEXT', risk: 'UNKNOWN', flags: [] },
+        is_booking_triggered: false,
+      },
+    });
+    aiConversationPersistenceService.finalizeDirectResponse.mockResolvedValue({
+      text: 'ok',
+    });
+
+    await service.chatWithAI(7, 'còn lên nguồn nhưng chạy rất rè', 21);
+
+    expect(aiStructuredExtractorService.extract).toHaveBeenCalledTimes(1);
+  });
+  it('không merge device ngoài alias từ extractor vào intent gate', async () => {
+    aiIntentGateService.analyze.mockReturnValue({
+      detectedDeviceLabel: null,
+      detectedIssueLabel: null,
+      supportedDeviceCategory: 'UNKNOWN',
+      isTechnical: false,
+      shouldReturnDirectResponse: false,
+      shouldUseRag: false,
+      intent: 'NORMAL',
+    });
+    aiStructuredExtractorService.extract.mockResolvedValue({
+      device: 'Máy Thì Sao',
+      symptom: 'Bị hư',
+      deviceCategory: 'GENERIC_APPLIANCE',
+      confidence: {
+        device: 0.92,
+        symptom: 0.88,
+        overall: 0.9,
+      },
+    });
+    aiGuidedDiagnosisService.resolveNextStep.mockReturnValue({
+      action: 'DIRECT_RESPONSE',
+      parsedResponse: {
+        text: 'ok',
+        state: { phase: 'COLLECTING', risk: 'UNKNOWN', flags: [] },
+        is_booking_triggered: false,
+      },
+    });
+    aiConversationPersistenceService.finalizeDirectResponse.mockResolvedValue({
+      text: 'ok',
+    });
+
+    await service.chatWithAI(7, 'xe máy thì sao', null);
+
+    expect(aiGuidedDiagnosisService.resolveNextStep).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intentGate: expect.objectContaining({
+          detectedDeviceLabel: null,
+          supportedDeviceCategory: 'UNKNOWN',
+        }),
+      }),
+    );
+  });
+
+  it('không merge detectedOtherDevices ngoài alias từ extractor vào state', async () => {
+    aiIntentGateService.analyze.mockReturnValue({
+      detectedDeviceLabel: 'Máy giặt',
+      detectedIssueLabel: null,
+      supportedDeviceCategory: 'WATER_APPLIANCE',
+      isTechnical: true,
+      shouldReturnDirectResponse: false,
+      shouldUseRag: false,
+      intent: 'TECHNICAL_VAGUE',
+    });
+    aiStructuredExtractorService.extract.mockResolvedValue({
+      device: 'Máy giặt',
+      detectedOtherDevices: ['Xe máy', 'Tủ lạnh', 'Máy Thì Sao'],
+      confidence: {
+        device: 0.95,
+        overall: 0.95,
+      },
+    });
+    aiGuidedDiagnosisService.resolveNextStep.mockReturnValue({
+      action: 'DIRECT_RESPONSE',
+      parsedResponse: {
+        text: 'ok',
+        state: { phase: 'COLLECTING', risk: 'UNKNOWN', flags: [] },
+        is_booking_triggered: false,
+      },
+    });
+    aiConversationPersistenceService.finalizeDirectResponse.mockResolvedValue({
+      text: 'ok',
+    });
+
+    await service.chatWithAI(7, 'máy giặt với xe máy', null);
+
+    expect(aiGuidedDiagnosisService.resolveNextStep).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prevState: expect.objectContaining({
+          detectedOtherDevices: ['Tủ lạnh'],
+        }),
+      }),
+    );
+  });
+
+  it('seed prevState tu session context truoc khi day vao guided diagnosis', async () => {
+    prisma.chatSession.findUnique.mockResolvedValue({
+      id: 21,
+      status: 'AI_CONSULTING',
+      deviceType: 'May giat',
+      symptom: 'Khong vat',
+      aiSummary: 'summary',
+    });
+    aiIntentGateService.analyze.mockReturnValue({
+      detectedDeviceLabel: null,
+      detectedIssueLabel: null,
+      supportedDeviceCategory: 'UNKNOWN',
+      isTechnical: true,
+      shouldReturnDirectResponse: false,
+      shouldUseRag: false,
+      intent: 'TECHNICAL_VAGUE',
+    });
+    aiGuidedDiagnosisService.resolveNextStep.mockReturnValue({
+      action: 'DIRECT_RESPONSE',
+      parsedResponse: {
+        text: 'ok',
+        state: { phase: 'COLLECTING', risk: 'UNKNOWN', flags: [] },
+        is_booking_triggered: false,
+      },
+    });
+    aiConversationPersistenceService.finalizeDirectResponse.mockResolvedValue({
+      text: 'ok',
+    });
+
+    await service.chatWithAI(7, 'no bi khung khung', 21);
+
+    expect(aiGuidedDiagnosisService.resolveNextStep).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prevState: expect.objectContaining({
+          device: 'May giat',
+          symptom: 'Khong vat',
         }),
       }),
     );

@@ -76,7 +76,10 @@ export class AiService {
     }
 
     let intentGate = this.aiIntentGateService.analyze(message);
-    let effectivePrevState = this.ensurePlainState(prevState);
+    let effectivePrevState = this.seedPrevStateFromSessionContext(
+      this.ensurePlainState(prevState),
+      sessionContext,
+    );
 
     const extractorMerged = await this.enrichFromStructuredExtractor({
       originalText: message,
@@ -289,14 +292,27 @@ export class AiService {
     prevState: PlainState | null;
     intentGate: any;
   }) {
-    const prevState = this.ensurePlainState(input.prevState);
+    const prevState = this.ensurePlainState(input.prevState) || {};
     const intentGate = { ...input.intentGate };
+    const previousDeviceKey = this.normalizeDeviceKey(prevState.device);
+    const detectedDeviceKey = this.normalizeDeviceKey(
+      intentGate.detectedDeviceLabel,
+    );
 
     if (
-      prevState.device &&
-      intentGate.detectedDeviceLabel &&
-      this.normalizeText(prevState.device) !==
-        this.normalizeText(intentGate.detectedDeviceLabel)
+      previousDeviceKey &&
+      detectedDeviceKey &&
+      previousDeviceKey !== detectedDeviceKey
+    ) {
+      return { prevState, intentGate };
+    }
+
+    if (
+      this.shouldSkipStructuredExtractor(
+        input.originalText,
+        prevState,
+        intentGate,
+      )
     ) {
       return { prevState, intentGate };
     }
@@ -311,23 +327,25 @@ export class AiService {
       return { prevState, intentGate };
     }
 
+    const normalizedExtraction =
+      this.normalizeStructuredExtractionForWebScope(extracted);
     const nextState: PlainState = { ...prevState };
     const nextIntentGate = { ...intentGate };
-    const overallConfidence = extracted.confidence?.overall ?? 0;
+    const overallConfidence = normalizedExtraction.confidence?.overall ?? 0;
 
-    if (extracted.detectedOtherDevices?.length) {
-      nextState.detectedOtherDevices = extracted.detectedOtherDevices;
+    if (normalizedExtraction.detectedOtherDevices?.length) {
+      nextState.detectedOtherDevices = normalizedExtraction.detectedOtherDevices;
     }
 
-    if (Array.isArray(extracted.flags) && extracted.flags.length > 0) {
+    if (Array.isArray(normalizedExtraction.flags) && normalizedExtraction.flags.length > 0) {
       nextState.flags = Array.from(
-        new Set([...(Array.isArray(prevState.flags) ? prevState.flags : []), ...extracted.flags]),
+        new Set([...(Array.isArray(prevState.flags) ? prevState.flags : []), ...normalizedExtraction.flags]),
       );
     }
 
-    if (extracted.needsClarification) {
+    if (normalizedExtraction.needsClarification) {
       nextState.clarificationQuestion =
-        extracted.clarificationQuestion ||
+        normalizedExtraction.clarificationQuestion ||
         nextState.clarificationQuestion ||
         null;
       nextIntentGate.detectedDeviceLabel = null;
@@ -340,34 +358,38 @@ export class AiService {
     }
 
     if (
-      extracted.device &&
+      normalizedExtraction.device &&
       (!prevState.device ||
-        this.normalizeText(prevState.device) === this.normalizeText(extracted.device))
+        this.normalizeDeviceKey(prevState.device) ===
+          this.normalizeDeviceKey(normalizedExtraction.device))
     ) {
-      nextIntentGate.detectedDeviceLabel = extracted.device;
+      nextIntentGate.detectedDeviceLabel =
+        prevState.device || normalizedExtraction.device;
     }
 
-    if (extracted.symptom) {
-      nextIntentGate.detectedIssueLabel = extracted.symptom;
+    if (normalizedExtraction.symptom) {
+      nextIntentGate.detectedIssueLabel = normalizedExtraction.symptom;
     }
 
-    if (extracted.deviceCategory) {
-      nextIntentGate.supportedDeviceCategory = extracted.deviceCategory;
+    if (normalizedExtraction.deviceCategory) {
+      nextIntentGate.supportedDeviceCategory = normalizedExtraction.deviceCategory;
     }
 
-    if (extracted.risk) {
-      nextState.risk = extracted.risk;
+    this.syncIntentGateFromExtraction(nextIntentGate);
+
+    if (normalizedExtraction.risk) {
+      nextState.risk = normalizedExtraction.risk;
     }
 
     if (
-      extracted.contextAnswers &&
-      typeof extracted.contextAnswers === 'object' &&
-      !Array.isArray(extracted.contextAnswers)
+      normalizedExtraction.contextAnswers &&
+      typeof normalizedExtraction.contextAnswers === 'object' &&
+      !Array.isArray(normalizedExtraction.contextAnswers)
     ) {
       nextState.contextAnswers = {
         ...(this.ensurePlainState(prevState.contextAnswers) || {}),
         ...Object.fromEntries(
-          Object.entries(extracted.contextAnswers).filter(
+          Object.entries(normalizedExtraction.contextAnswers).filter(
             ([, value]) => typeof value === 'string' && value.trim(),
           ),
         ),
@@ -375,6 +397,84 @@ export class AiService {
     }
 
     return { prevState: nextState, intentGate: nextIntentGate };
+  }
+
+  private shouldSkipStructuredExtractor(
+    originalText: string,
+    prevState: PlainState,
+    intentGate: any,
+  ) {
+    if (this.countSupportedDeviceMentions(originalText) > 1) {
+      return false;
+    }
+
+    const hasClearTechnicalIntent =
+      typeof intentGate?.detectedDeviceLabel === 'string' &&
+      intentGate.detectedDeviceLabel.trim().length > 0 &&
+      typeof intentGate?.detectedIssueLabel === 'string' &&
+      intentGate.detectedIssueLabel.trim().length > 0;
+
+    if (hasClearTechnicalIntent) {
+      return true;
+    }
+
+    const previousDeviceKey = this.normalizeDeviceKey(prevState?.device);
+    const detectedDeviceKey = this.normalizeDeviceKey(
+      intentGate?.detectedDeviceLabel,
+    );
+
+    return Boolean(
+      previousDeviceKey &&
+        detectedDeviceKey &&
+        previousDeviceKey !== detectedDeviceKey,
+    );
+  }
+
+  private countSupportedDeviceMentions(originalText: string) {
+    const normalized = this.normalizeText(originalText);
+    const deviceGroups = [
+      ['may lanh', 'dieu hoa'],
+      ['may giat'],
+      ['tu lanh', 'cai tu', 'tu dong'],
+      ['lo vi song', 'microwave'],
+      ['may rua bat', 'may rua chen'],
+      ['bep tu'],
+      ['may suoi', 'quat suoi', 'den suoi'],
+    ];
+
+    return deviceGroups.filter((keywords) =>
+      keywords.some((keyword) => normalized.includes(keyword)),
+    ).length;
+  }
+
+  private syncIntentGateFromExtraction(intentGate: any) {
+    const hasDevice =
+      typeof intentGate?.detectedDeviceLabel === 'string' &&
+      intentGate.detectedDeviceLabel.trim().length > 0;
+    const hasIssue =
+      typeof intentGate?.detectedIssueLabel === 'string' &&
+      intentGate.detectedIssueLabel.trim().length > 0;
+
+    if (hasDevice && hasIssue) {
+      intentGate.intent = 'TECHNICAL_SPECIFIC';
+      intentGate.isTechnical = true;
+      intentGate.isTechnicalSpecific = true;
+      intentGate.isTechnicalVague = false;
+      intentGate.shouldUseRag = false;
+      intentGate.shouldAskClarification = false;
+      intentGate.shouldReturnDirectResponse = false;
+      return;
+    }
+
+    if (hasDevice || hasIssue) {
+      intentGate.intent = 'TECHNICAL_VAGUE';
+      intentGate.isTechnical = true;
+      intentGate.isTechnicalSpecific = false;
+      intentGate.isTechnicalVague = true;
+      intentGate.shouldUseRag = false;
+      intentGate.shouldAskClarification = true;
+      intentGate.shouldReturnDirectResponse = false;
+    }
   }
 
   private async retrieveRelevantChunks(input: {
@@ -468,7 +568,11 @@ export class AiService {
       risk,
       aiText: this.cleanText(parsed?.text) || sessionContext?.aiSummary || '',
     });
-    const canBook = risk === 'RED';
+    const canBook = this.canOpenBooking({
+      parsed,
+      state,
+      prevState,
+    });
 
     const nextState: PlainState = {
       ...prevState,
@@ -485,10 +589,6 @@ export class AiService {
       finalAiSummary,
       aiSummaryText: finalAiSummary.analysis,
     };
-
-    if (!canBook && nextState.phase === 'READY_TO_BOOK') {
-      nextState.phase = 'ADVISING';
-    }
 
     return {
       ...parsed,
@@ -564,8 +664,87 @@ export class AiService {
       : null;
   }
 
+  private normalizeStructuredExtractionForWebScope(
+    extracted: StructuredExtractionResult,
+  ): StructuredExtractionResult {
+    const normalized: StructuredExtractionResult = { ...extracted };
+    const canonicalDevice = this.resolveSupportedWebDeviceLabel(extracted.device);
+
+    normalized.device = canonicalDevice;
+    if (!canonicalDevice) {
+      normalized.deviceCategory = null;
+    }
+
+    if (Array.isArray(extracted.detectedOtherDevices)) {
+      normalized.detectedOtherDevices = Array.from(
+        new Set(
+          extracted.detectedOtherDevices
+            .map((value) => this.resolveSupportedWebDeviceLabel(value))
+            .filter(
+              (value): value is string =>
+                Boolean(value) && value !== canonicalDevice,
+            ),
+        ),
+      );
+    }
+
+    return normalized;
+  }
+
+  private seedPrevStateFromSessionContext(
+    prevStateValue: PlainState | null,
+    sessionContext: {
+      deviceType?: string | null;
+      symptom?: string | null;
+      aiSummary?: string | null;
+    } | null,
+  ): PlainState {
+    const prevState = prevStateValue ? { ...prevStateValue } : {};
+
+    if (!this.cleanText(prevState.device) && this.cleanText(sessionContext?.deviceType)) {
+      prevState.device = sessionContext?.deviceType?.trim();
+    }
+
+    if (!this.cleanText(prevState.symptom) && this.cleanText(sessionContext?.symptom)) {
+      prevState.symptom = sessionContext?.symptom?.trim();
+    }
+
+    if (
+      !this.cleanText(prevState.aiSummaryText) &&
+      this.cleanText(sessionContext?.aiSummary)
+    ) {
+      prevState.aiSummaryText = sessionContext?.aiSummary?.trim();
+    }
+
+    return prevState;
+  }
+
   private cleanText(value: unknown) {
     return typeof value === 'string' && value.trim() ? value.trim() : null;
+  }
+
+  private resolveSupportedWebDeviceLabel(value: unknown) {
+    const cleaned = this.cleanText(value);
+    if (!cleaned) {
+      return null;
+    }
+
+    const normalized = this.normalizeText(cleaned);
+    const supportedAliases = [
+      ['may lanh', 'dieu hoa'],
+      ['may giat'],
+      ['tu lanh', 'cai tu', 'tu dong'],
+      ['lo vi song', 'microwave'],
+      ['may rua bat', 'may rua chen'],
+      ['bep tu'],
+      ['may suoi', 'quat suoi', 'den suoi'],
+    ];
+
+    return supportedAliases.some((aliases) =>
+      aliases.some((alias) => normalized === alias || normalized.includes(alias)),
+    )
+      ? cleaned
+      : null;
   }
 
   private normalizeText(value: string) {
@@ -579,12 +758,52 @@ export class AiService {
       .trim();
   }
 
+  private normalizeDeviceKey(value: unknown) {
+    const normalized = this.normalizeText(
+      typeof value === 'string' ? value : '',
+    );
+
+    if (!normalized) {
+      return '';
+    }
+
+    if (normalized === 'may lanh' || normalized === 'dieu hoa') {
+      return 'air_conditioner';
+    }
+
+    return normalized;
+  }
+
   private normalizeRisk(value: unknown): 'GREEN' | 'YELLOW' | 'RED' | 'UNKNOWN' {
     if (value === 'GREEN' || value === 'YELLOW' || value === 'RED') {
       return value;
     }
 
     return 'UNKNOWN';
+  }
+
+  private canOpenBooking(input: {
+    parsed: any;
+    state: PlainState;
+    prevState: PlainState | null;
+  }) {
+    if (input.parsed?.is_booking_triggered === true) {
+      return true;
+    }
+
+    if (input.state?.canBook === true || input.prevState?.canBook === true) {
+      return true;
+    }
+
+    if (input.state?.phase === 'READY_TO_BOOK') {
+      return true;
+    }
+
+    if (input.state?.diagnosisFlow?.nextAction === 'SUGGEST_BOOKING') {
+      return true;
+    }
+
+    return false;
   }
 
   private toSymptomLabel(value: string | null) {
