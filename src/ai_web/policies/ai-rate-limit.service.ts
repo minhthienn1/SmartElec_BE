@@ -6,6 +6,7 @@ export class AiRateLimitService {
     private readonly lastRequestTime = new Map<number, number>();
 
     assertRateLimit(userId: number): void {
+        // Giới hạn tần suất gửi yêu cầu theo user và dọn bộ nhớ khi Map tăng quá lớn.
         const now = Date.now();
         const lastTime = this.lastRequestTime.get(userId) || 0;
 

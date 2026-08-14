@@ -340,7 +340,7 @@ describe('AiGuidedDiagnosisService', () => {
     });
 
     expect(result.action).toBe('DIRECT_RESPONSE');
-    expect(result.parsedResponse?.text).toContain('Báº¡n tráº£ lá»i giÃºp mÃ¬nh');
+    expect(result.parsedResponse?.text).toContain('Bạn trả lời giúp mình');
     expect(result.parsedResponse?.text).not.toContain('thiet bi nao dang gap loi');
   });
 });

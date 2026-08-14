@@ -72,6 +72,7 @@ export function evaluateAiUsefulness(input: {
   aiResponse?: string | null;
   aiFeedback?: AiFeedback;
 }): AiUsefulnessEvaluation {
+  // Chấm mức hữu ích bằng tiến triển state, cảnh báo an toàn và feedback của người dùng.
   const prevState = toPlainState(input.prevState);
   const nextState = toPlainState(input.nextState);
   const reasons: string[] = [];
@@ -154,6 +155,7 @@ export function evaluateAiUsefulness(input: {
 }
 
 function classifyUsefulness(score: number): UsefulnessLabel {
+  // Chuyển điểm số 0-10 thành nhãn hữu ích dùng trong reasoning log.
   if (score >= 8) {
     return UsefulnessLabel.USEFUL;
   }
@@ -169,6 +171,7 @@ function askedAlreadyKnownInfo(input: {
   prevState: AiConversationState | null;
   aiResponse?: string | null;
 }) {
+  // Phát hiện AI hỏi lại device, symptom hoặc mã lỗi đã tồn tại trong state trước đó.
   const text = normalizeText(input.aiResponse);
   if (!text) {
     return false;
@@ -205,6 +208,7 @@ function isMissedDangerWarning(input: {
   nextRisk: string | null;
   aiResponse?: string | null;
 }) {
+  // Kiểm tra response có bỏ sót hướng dẫn an toàn khi state đã đánh dấu rủi ro cao hay không.
   if (!input.nextRisk || !DANGER_RISKS.has(input.nextRisk)) {
     return false;
   }
@@ -221,6 +225,7 @@ function isAlmostUnchanged(
   prevState: AiConversationState | null,
   nextState: AiConversationState | null,
 ) {
+  // So sánh snapshot nghiệp vụ để nhận biết một lượt chat không làm state tiến triển.
   if (!prevState || !nextState) {
     return false;
   }
@@ -232,6 +237,7 @@ function isAlmostUnchanged(
 }
 
 function buildStateSnapshot(state: AiConversationState) {
+  // Lấy các trường nghiệp vụ quan trọng phục vụ so sánh state trước và sau.
   return {
     device: getText(state.device),
     symptom: getText(state.symptom),
@@ -242,6 +248,7 @@ function buildStateSnapshot(state: AiConversationState) {
 }
 
 function normalizeContextAnswers(value: unknown) {
+  // Chỉ giữ các context answer quan trọng và có nội dung để chấm điểm.
   const plain = toPlainState(value);
   const normalized: Record<string, string> = {};
 
@@ -256,6 +263,7 @@ function normalizeContextAnswers(value: unknown) {
 }
 
 function countFilledContext(value: unknown) {
+  // Đếm số trường context quan trọng đã được người dùng cung cấp.
   const plain = toPlainState(value);
 
   return IMPORTANT_CONTEXT_KEYS.reduce((count, key) => {
@@ -264,6 +272,7 @@ function countFilledContext(value: unknown) {
 }
 
 function comparePhase(prevPhase: unknown, nextPhase: unknown) {
+  // So sánh thứ tự phase để xác định hội thoại đang tiến lên hay bị lùi bước.
   const prev = PHASE_ORDER[getText(prevPhase)] ?? 0;
   const next = PHASE_ORDER[getText(nextPhase)] ?? 0;
 
@@ -283,11 +292,13 @@ function comparePhase(prevPhase: unknown, nextPhase: unknown) {
 }
 
 function normalizeRisk(value: unknown) {
+  // Chuẩn hóa risk thành chữ hoa để đối chiếu ổn định.
   const text = getText(value);
   return text ? text.toUpperCase() : null;
 }
 
 function normalizeText(value: unknown) {
+  // Chuẩn hóa văn bản về dạng không dấu, chữ thường để kiểm tra mẫu câu.
   if (typeof value !== 'string') {
     return '';
   }
@@ -303,19 +314,23 @@ function normalizeText(value: unknown) {
 }
 
 function getText(value: unknown) {
+  // Lấy chuỗi đã trim hoặc trả chuỗi rỗng cho dữ liệu không hợp lệ.
   return typeof value === 'string' && value.trim() ? value.trim() : '';
 }
 
 function toPlainState(value: unknown): AiConversationState | null {
+  // Chỉ nhận object thuần làm conversation state.
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as AiConversationState)
     : null;
 }
 
 function clamp(value: number, min: number, max: number) {
+  // Giới hạn điểm số trong khoảng cho phép.
   return Math.min(max, Math.max(min, value));
 }
 
 function dedupeReasons(reasons: string[]) {
+  // Loại lý do trùng trước khi lưu kết quả đánh giá tự động.
   return Array.from(new Set(reasons));
 }

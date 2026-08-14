@@ -8,7 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import {
     responseSchema,
     smartElecSystemPrompt,
-} from './ai.constants';
+} from '../ai.constants';
 
 @Injectable()
 export class AiGeminiService {
@@ -17,6 +17,7 @@ export class AiGeminiService {
     private readonly model: GenerativeModel;
 
     constructor(private readonly configService: ConfigService) {
+        // Khởi tạo Gemini client và model mặc định dùng chung cho luồng chat AI web.
         const apiKey = this.configService.get<string>('GEMINI_API_KEY') || '';
 
         this.genAI = new GoogleGenerativeAI(apiKey);
@@ -39,6 +40,7 @@ export class AiGeminiService {
         history?: any[];
         imageBase64?: string;
     }): Promise<string> {
+        // Gửi prompt hội thoại tới model mặc định và yêu cầu kết quả JSON theo schema chính.
         return this.generateStructuredJson({
             systemInstruction: smartElecSystemPrompt,
             responseSchema,
@@ -59,6 +61,7 @@ export class AiGeminiService {
         temperature?: number;
         topP?: number;
     }): Promise<string> {
+        // Tạo model theo cấu hình đầu vào, ghép ảnh nếu có và trả nguyên văn JSON từ Gemini.
         const parts: any[] = [{ text: input.userPrompt }];
 
         if (input.imageBase64) {

@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { JobStatus } from '@prisma/client';
 
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service';
 
 /**
  * Kết quả gợi ý "case cũ có liên quan" trả về cho Flutter.
@@ -49,7 +49,9 @@ const LOOKBACK_DAYS = 180;
 export class AiRelatedHistoryService {
     private readonly logger = new Logger(AiRelatedHistoryService.name);
 
-    constructor(private readonly prisma: PrismaService) { }
+    constructor(private readonly prisma: PrismaService) {
+        // Dùng Prisma để tìm các ca cũ có dữ liệu thiết bị liên quan của cùng khách hàng.
+    }
 
     /**
      * Không so khớp nội dung tin nhắn (text similarity). Chỉ dựa vào dữ liệu
@@ -62,6 +64,7 @@ export class AiRelatedHistoryService {
     async findRelatedCase(
         input: FindRelatedCaseInput,
     ): Promise<RelatedHistorySummary | null> {
+        // Tìm một ca cũ liên quan theo deviceId, thương hiệu hoặc loại thiết bị theo độ ưu tiên.
         try {
             const since = new Date(Date.now() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
 
@@ -129,6 +132,7 @@ export class AiRelatedHistoryService {
         deviceType: string | null,
         brandHint: string | null,
     ): Promise<number | null> {
+        // Ánh xạ nhãn thiết bị và gợi ý thương hiệu sang deviceId thật thuộc khách hàng.
         if (!deviceType) return null;
         try {
             const device = await this.prisma.device.findFirst({
@@ -161,6 +165,7 @@ export class AiRelatedHistoryService {
         },
         matchedBy: RelatedHistorySummary['matchedBy'],
     ): RelatedHistorySummary {
+        // Thu gọn ChatSession thành payload lịch sử phụ an toàn để trả về client web.
         return {
             sessionId: session.id,
             deviceType: session.deviceType,

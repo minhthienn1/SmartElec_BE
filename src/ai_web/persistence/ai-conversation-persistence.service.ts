@@ -3,7 +3,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { JobStatus, MessageType, Prisma } from '@prisma/client';
 
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service';
 import { evaluateAiUsefulness } from './ai-usefulness-scoring';
 
 export type AiConversationState = Record<string, any>;
@@ -28,12 +28,15 @@ interface FinalizeResponseInput {
 export class AiConversationPersistenceService {
     private readonly logger = new Logger(AiConversationPersistenceService.name);
 
-    constructor(private readonly prisma: PrismaService) { }
+    constructor(private readonly prisma: PrismaService) {
+        // Dùng Prisma để lưu state, transcript, phiên tư vấn và phản hồi AI của website.
+    }
 
     async getPreviousState(
         userId: number,
         sessionId: number | null,
     ): Promise<AiConversationState | null> {
+        // Khôi phục state gần nhất của đúng user và session để hội thoại nhiều lượt không mất ngữ cảnh.
         if (!sessionId) {
             return null;
         }
@@ -58,6 +61,7 @@ export class AiConversationPersistenceService {
     }
 
     async finalizeDirectResponse(input: FinalizeResponseInput) {
+        // Hoàn tất một response bằng cách đồng bộ session, reasoning log và transcript trước khi trả về FE.
         const sessionId = await this.persistRepairCaseIfNeeded({
             userId: input.userId,
             sessionId: input.sessionId,
@@ -88,10 +92,12 @@ export class AiConversationPersistenceService {
     }
 
     async finalizeAiResponse(input: FinalizeResponseInput) {
+        // Dùng chung pipeline persistence cho response do Gemini/RAG tạo ra và response deterministic.
         return this.finalizeDirectResponse(input);
     }
 
     async saveFeedback(logId: number, feedback: AiFeedback) {
+        // Ghi LIKE/DISLIKE theo kiểu idempotent và cập nhật điểm hữu ích đúng một lần cho mỗi log.
         const log = await this.prisma.aiReasoningLog.findUnique({
             where: {
                 id: logId,
@@ -146,6 +152,7 @@ export class AiConversationPersistenceService {
     }
 
     async getGoldenExamples(category: string, limit: number = 2) {
+        // Lấy ví dụ tốt và một ví dụ kém theo nhóm thiết bị để hỗ trợ prompt/evaluation của AI.
         const golden = await this.prisma.aiReasoningLog.findMany({
             where: {
                 deviceCategory: {
@@ -211,6 +218,7 @@ export class AiConversationPersistenceService {
         prevState: AiConversationState | null,
         parsed: AiParsedResponse,
     ): Promise<number | null> {
+        // Lưu snapshot trước/sau, response, risk và điểm hữu ích để truy vết chất lượng từng lượt AI.
         try {
             const state = this.toPlainState(parsed?.state);
 
@@ -259,6 +267,7 @@ export class AiConversationPersistenceService {
         parsed: AiParsedResponse;
         fallbackMessage: string;
     }): Promise<number | null> {
+        // Chỉ tạo hoặc cập nhật ChatSession khi state đã đủ device + symptom hoặc đã kích hoạt đặt thợ.
         const state = this.toPlainState(input.parsed?.state);
 
         const isBooking =
@@ -296,6 +305,7 @@ export class AiConversationPersistenceService {
         summary: string,
         sessionId?: number | null,
     ): Promise<number | null> {
+        // Ưu tiên cập nhật session hiện tại, kế đến ca gần đây cùng thiết bị, cuối cùng mới tạo session mới.
         try {
             if (sessionId) {
                 const existingCase = await this.prisma.chatSession.findUnique({
@@ -367,6 +377,7 @@ export class AiConversationPersistenceService {
         userMessage: string;
         aiResponse?: string | null;
     }) {
+        // Lưu cặp tin nhắn user/AI vào bảng Message để lịch sử web có thể hydrate lại sau khi tải trang.
         if (!input.sessionId) {
             return;
         }
@@ -421,6 +432,7 @@ export class AiConversationPersistenceService {
     }
 
     private toPlainState(value: unknown): AiConversationState | null {
+        // Chỉ nhận object thuần làm conversation state, loại bỏ array và giá trị nguyên thủy.
         if (!this.isPlainObject(value)) {
             return null;
         }
@@ -429,10 +441,12 @@ export class AiConversationPersistenceService {
     }
 
     private isPlainObject(value: unknown): value is Record<string, any> {
+        // Kiểm tra runtime cho object state trước khi đọc hoặc ghi sang Prisma JSON.
         return Boolean(value && typeof value === 'object' && !Array.isArray(value));
     }
 
     private getStringValue(value: unknown): string | null {
+        // Chuẩn hóa một field state về chuỗi không rỗng hoặc null.
         if (typeof value === 'string' && value.trim()) {
             return value.trim();
         }

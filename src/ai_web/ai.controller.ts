@@ -19,7 +19,9 @@ import { AiService } from './ai.service';
 export class AiController {
   private readonly logger = new Logger(AiController.name);
 
-  constructor(private readonly aiService: AiService) {}
+  constructor(private readonly aiService: AiService) {
+    // Nhận AiService để chuyển các request HTTP sang luồng xử lý AI dành riêng cho website.
+  }
 
   @UseGuards(JwtAuthGuard, ThrottlerGuard)
   @Throttle({ ai_chat: { limit: 1, ttl: 3000 } })
@@ -34,6 +36,7 @@ export class AiController {
       history?: any[];
     },
   ) {
+    // Xác thực user từ JWT, chuẩn hóa sessionId rồi chuyển message và lịch sử sang orchestrator AI web.
     const userId = Number(req.user?.id || req.user?.userId || req.user?.sub);
 
     if (!userId || isNaN(userId)) {
@@ -60,6 +63,7 @@ export class AiController {
     @Param('logId', ParseIntPipe) logId: number,
     @Body('feedback') feedback: string,
   ) {
+    // Chỉ chấp nhận LIKE/DISLIKE trước khi lưu phản hồi cho reasoning log tương ứng.
     if (!['LIKE', 'DISLIKE'].includes(feedback)) {
       throw new BadRequestException(
         'feedback phải là "LIKE" hoặc "DISLIKE".',

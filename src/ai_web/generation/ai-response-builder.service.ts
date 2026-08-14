@@ -3,7 +3,7 @@ import { Injectable } from '@nestjs/common';
 import {
     SAFE_FALLBACK_STATE,
     TECHNICAL_NO_RAG_FALLBACK,
-} from './ai.constants';
+} from '../ai.constants';
 
 @Injectable()
 export class AiResponseBuilderService {
@@ -11,6 +11,7 @@ export class AiResponseBuilderService {
         originalText?: string | null;
         detectedIssueLabel?: string | null;
     }) {
+        // Chọn mô tả sự cố nguy hiểm đủ rõ để lưu state thay vì một nhãn chung chung.
         const originalText = intentGate.originalText?.trim();
         const issueLabel = intentGate.detectedIssueLabel?.trim();
 
@@ -22,6 +23,7 @@ export class AiResponseBuilderService {
     }
 
     sanitizeUserMessage(message: string): string {
+        // Lọc các chuỗi có dấu hiệu prompt injection trước khi đưa nội dung người dùng cho LLM.
         const forbiddenKeywords = [
             /\[\s*THÔNG TIN THIẾT BỊ KHÁCH HÀNG\s*\]/gi,
             /\[\s*KIẾN THỨC TỪ HỆ THỐNG\s*\]/gi,
@@ -40,6 +42,7 @@ export class AiResponseBuilderService {
     }
 
     buildDirectParsedResponse(intentGate: any, prevState: any) {
+        // Dựng response deterministic cho các intent không cần gọi RAG hoặc Gemini tư vấn.
         const baseState = {
             ...(prevState || SAFE_FALLBACK_STATE),
             device:
@@ -124,6 +127,7 @@ export class AiResponseBuilderService {
     }
 
     buildNoRagFallback(intentGate: any, prevState: any, originalText: string) {
+        // Trả fallback an toàn khi câu hỏi kỹ thuật hợp lệ nhưng kho RAG không có tài liệu phù hợp.
         return {
             text: TECHNICAL_NO_RAG_FALLBACK,
             state: {
@@ -144,6 +148,7 @@ export class AiResponseBuilderService {
     }
 
     buildRagContext(results: any[]): string {
+        // Chuyển các chunk RAG thành khối ngữ cảnh có nguồn và metadata để chèn vào prompt.
         const docsText = results
             .map((chunk: any) => {
                 const title = chunk.documentTitle || chunk.title || 'Tài liệu RAG';
@@ -176,6 +181,7 @@ Chỉ thị quan trọng:
     }
 
     prioritizeChunksByErrorCode(originalText: string, results: any[]) {
+        // Đưa các chunk chứa đúng mã lỗi người dùng nêu lên đầu danh sách kết quả RAG.
         const errorCodesMatch = originalText.match(
             /\b[A-Z][0-9]\b|\b[A-Z]{2,3}[0-9]?\b/g,
         );
@@ -205,6 +211,7 @@ Chỉ thị quan trọng:
     buildCleanGeminiHistory(
         history: any[],
     ): { role: string; parts: { text: string }[] }[] {
+        // Chuẩn hóa lịch sử Gemini thành cặp user/model xen kẽ và loại lượt user chưa có phản hồi.
         const cleanHistory: { role: string; parts: { text: string }[] }[] = [];
         let expectedRole = 'user';
 
@@ -233,6 +240,7 @@ Chỉ thị quan trọng:
     }
 
     normalizeParsedResponse(parsed: any, prevState: any) {
+        // Hợp nhất response LLM với state cũ và bảo toàn context đã thu thập qua nhiều lượt chat.
         const fallbackState = prevState || SAFE_FALLBACK_STATE;
         const mergedContextAnswers = this.mergeContextAnswers(
             fallbackState?.contextAnswers,
@@ -268,6 +276,7 @@ Chỉ thị quan trọng:
         intentGate: any;
         cleanMessage: string;
     }): string {
+        // Ghép RAG, lịch sử state, phân loại intent và câu hỏi sạch thành prompt tư vấn cuối.
         return `
 ${input.ragContext}
 ${input.rlhfInstruction}
@@ -297,6 +306,7 @@ Hãy phân tích và phản hồi dựa trên vai trò SmartElec Buddy.
 `;
     }
     private mergeContextAnswers(previousValue: unknown, nextValue: unknown) {
+        // Shallow-merge các context answer có giá trị và không xóa dữ liệu cũ bằng giá trị rỗng.
         const previous =
             previousValue && typeof previousValue === 'object' && !Array.isArray(previousValue)
                 ? (previousValue as Record<string, unknown>)
