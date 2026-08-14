@@ -3,8 +3,12 @@ import { Injectable, Logger } from '@nestjs/common';
 import {
   structuredExtractionResponseSchema,
   structuredExtractorSystemPrompt,
-} from './ai.constants';
-import { AiGeminiService } from './ai-gemini.service';
+} from '../ai.constants';
+import { AiGeminiService } from '../generation/ai-gemini.service';
+import {
+  AiWebDeviceCatalogService,
+  WebDeviceDefinition,
+} from '../policies/ai-web-device-catalog.service';
 
 export type StructuredExtractionResult = {
   device?: string | null;
@@ -58,48 +62,17 @@ const KNOWN_DEVICE_CATEGORIES = new Set([
 @Injectable()
 export class AiStructuredExtractorService {
   private readonly logger = new Logger(AiStructuredExtractorService.name);
-  private readonly deviceAliases = [
-    {
-      label: 'Điều hòa',
-      promptLabel: 'máy lạnh',
-      aliases: ['máy lạnh', 'may lanh', 'điều hòa', 'dieu hoa'],
-    },
-    {
-      label: 'Máy giặt',
-      promptLabel: 'máy giặt',
-      aliases: ['máy giặt', 'may giat'],
-    },
-    {
-      label: 'Tủ lạnh',
-      promptLabel: 'tủ lạnh',
-      aliases: ['tủ lạnh', 'tu lanh', 'cái tủ', 'cai tu', 'tủ đông', 'tu dong'],
-    },
-    {
-      label: 'Lò vi sóng',
-      promptLabel: 'lò vi sóng',
-      aliases: ['lò vi sóng', 'lo vi song'],
-    },
-    {
-      label: 'Máy rửa bát',
-      promptLabel: 'máy rửa bát',
-      aliases: ['máy rửa bát', 'may rua bat'],
-    },
-    {
-      label: 'Bếp từ',
-      promptLabel: 'bếp từ',
-      aliases: ['bếp từ', 'bep tu'],
-    },
-    {
-      label: 'Máy sưởi',
-      promptLabel: 'máy sưởi',
-      aliases: ['máy sưởi', 'may suoi', 'quạt sưởi', 'quat suoi', 'đèn sưởi', 'den suoi'],
-    },
-  ];
-
-  constructor(private readonly aiGeminiService: AiGeminiService) {}
+  constructor(
+    private readonly aiGeminiService: AiGeminiService,
+    private readonly deviceCatalog: AiWebDeviceCatalogService =
+      new AiWebDeviceCatalogService(),
+  ) {
+    // Nhận Gemini adapter để thực hiện structured extraction khi rule chưa đủ dữ liệu.
+  }
 
   //chạy AI để trích xuất thông tin có cấu trúc từ đoạn text
   async extract(input: ExtractInput): Promise<StructuredExtractionResult | null> {
+    // Chạy heuristic nhiều thiết bị trước, sau đó gọi LLM JSON nếu câu còn thiếu hoặc mơ hồ.
     if (!this.shouldRun(input)) {
       return null;
     }
@@ -127,6 +100,7 @@ export class AiStructuredExtractorService {
   private resolveMultipleDeviceHeuristic(
     originalText: string,
   ): StructuredExtractionResult | null {
+    // Xử lý deterministic câu có nhiều thiết bị và tìm thiết bị chính nếu người dùng ưu tiên rõ.
     const mentionedDevices = this.collectMentionedDevices(originalText);
 
     if (mentionedDevices.length < 2) {
@@ -164,22 +138,15 @@ export class AiStructuredExtractorService {
   }
 
   private collectMentionedDevices(originalText: string) {
-    const lowerText = originalText.toLowerCase();
-    const devices: Array<{ label: string; promptLabel: string; aliases: string[] }> = [];
-
-    for (const device of this.deviceAliases) {
-      if (device.aliases.some((alias) => lowerText.includes(alias))) {
-        devices.push(device);
-      }
-    }
-
-    return devices;
+    // Thu thập toàn bộ thiết bị thuộc alias nội bộ xuất hiện trong câu người dùng.
+    return this.deviceCatalog.collectMentions(originalText);
   }
 
   private findPrioritizedDevice(
     originalText: string,
-    mentionedDevices: Array<{ label: string; promptLabel: string; aliases: string[] }>,
+    mentionedDevices: WebDeviceDefinition[],
   ) {
+    // Tìm thiết bị chính qua các cụm như “hỏi ... trước” hoặc “ưu tiên ...”.
     const lowerText = originalText.toLowerCase();
 
     for (const device of mentionedDevices) {
@@ -205,6 +172,7 @@ export class AiStructuredExtractorService {
 
   //kiểm tra xem thiết bị có chạy hay không dựa vào rule base
   private shouldRun(input: ExtractInput) {
+    // Quyết định có cần tốn một lượt LLM extraction hay rule hiện tại đã đủ chắc chắn.
     if (input.intentGate.isEmergency) {
       return false;
     }
@@ -250,10 +218,12 @@ export class AiStructuredExtractorService {
   }
 
   private hasMultipleDeviceSignals(originalText: string) {
+    // Kiểm tra câu có nhắc từ hai thiết bị alias nội bộ trở lên.
     return this.collectMentionedDevices(originalText).length >= 2;
   }
 
   private buildPrompt(input: ExtractInput) {
+    // Tạo prompt giới hạn LLM ở nhiệm vụ trả JSON extraction, không cho quyết định flow.
     return [
       '[Tin nhắn người dùng]',
       input.originalText.trim(),
@@ -280,6 +250,7 @@ export class AiStructuredExtractorService {
   private normalizeResult(
     value: StructuredExtractionResult,
   ): StructuredExtractionResult | null {
+    // Kiểm tra và làm sạch JSON từ LLM trước khi cho phép merge vào state.
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       return null;
     }
@@ -348,6 +319,7 @@ export class AiStructuredExtractorService {
   }
 
   private normalizeContextAnswers(value?: StructuredExtractionResult['contextAnswers']) {
+    // Giữ các context answer dạng chuỗi có nội dung và bỏ key rỗng từ LLM.
     const normalized: NonNullable<StructuredExtractionResult['contextAnswers']> = {};
 
     for (const [key, item] of Object.entries(value ?? {})) {
@@ -362,6 +334,7 @@ export class AiStructuredExtractorService {
   }
 
   private normalizeConfidence(value?: StructuredExtractionResult['confidence']) {
+    // Chuẩn hóa confidence từng trường về khoảng 0-1.
     const normalized: NonNullable<StructuredExtractionResult['confidence']> = {};
 
     for (const [key, item] of Object.entries(value ?? {})) {
@@ -375,6 +348,7 @@ export class AiStructuredExtractorService {
   }
 
   private cleanText(value?: string | null) {
+    // Trả chuỗi đã trim hoặc null để tránh merge dữ liệu rỗng vào state.
     if (typeof value !== 'string') {
       return null;
     }
@@ -384,6 +358,7 @@ export class AiStructuredExtractorService {
   }
 
   private normalizeText(value: string) {
+    // Chuẩn hóa chuỗi không dấu để heuristic alias xử lý nhiều cách nhập tiếng Việt.
     return value
       .toLowerCase()
       .normalize('NFD')

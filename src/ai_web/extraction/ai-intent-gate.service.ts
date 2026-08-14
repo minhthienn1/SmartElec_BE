@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { AiWebDeviceCatalogService } from '../policies/ai-web-device-catalog.service';
 
 export type AiIntentType =
   | 'GREETING'
@@ -52,62 +53,15 @@ export interface AiIntentGateResult {
   reasons: string[];
 }
 
-type DeviceRule = {
-  category: SupportedDeviceCategory;
-  label: string;
-  keywords: string[];
-};
-
-const SUPPORTED_WEB_DEVICE_KEYWORDS = new Set([
-  'may lanh',
-  'dieu hoa',
-  'tu lanh',
-  'cai tu',
-  'tu dong',
-  'may giat',
-  'may rua bat',
-  'may rua chen',
-  'bep tu',
-  'lo vi song',
-  'microwave',
-  'may suoi',
-  'quat suoi',
-  'den suoi',
-]);
-
-const DEVICE_RULES: DeviceRule[] = [
-  { category: 'COOLING_HEATING', label: 'Điều hòa', keywords: ['may lanh', 'dieu hoa'] },
-  { category: 'COOLING_HEATING', label: 'Tủ lạnh', keywords: ['tu lanh', 'cai tu', 'tu dong'] },
-  { category: 'COOLING_HEATING', label: 'Máy nước nóng', keywords: ['may nuoc nong', 'binh nong lanh'] },
-  { category: 'COOLING_HEATING', label: 'Máy sấy', keywords: ['may say', 'may say quan ao'] },
-  { category: 'WATER_APPLIANCE', label: 'Máy giặt', keywords: ['may giat'] },
-  { category: 'WATER_APPLIANCE', label: 'Máy rửa bát', keywords: ['may rua bat', 'may rua chen'] },
-  { category: 'WATER_APPLIANCE', label: 'Máy lọc nước', keywords: ['may loc nuoc'] },
-  { category: 'WATER_APPLIANCE', label: 'Máy bơm nước', keywords: ['may bom nuoc'] },
-  { category: 'COOKING_APPLIANCE', label: 'Bếp từ', keywords: ['bep tu'] },
-  { category: 'COOKING_APPLIANCE', label: 'Bếp điện', keywords: ['bep dien'] },
-  { category: 'COOKING_APPLIANCE', label: 'Lò vi sóng', keywords: ['lo vi song', 'microwave'] },
-  { category: 'COOKING_APPLIANCE', label: 'Lò nướng', keywords: ['lo nuong'] },
-  { category: 'COOKING_APPLIANCE', label: 'Nồi chiên không dầu', keywords: ['noi chien khong dau', 'noi chien'] },
-  { category: 'COOKING_APPLIANCE', label: 'Nồi cơm điện', keywords: ['noi com dien'] },
-  { category: 'COOKING_APPLIANCE', label: 'Máy pha cà phê', keywords: ['may pha ca phe'] },
-  { category: 'COOKING_APPLIANCE', label: 'Máy hút mùi', keywords: ['may hut mui'] },
-  { category: 'DISPLAY_AUDIO', label: 'Tivi', keywords: ['tivi', 'tv'] },
-  { category: 'DISPLAY_AUDIO', label: 'Màn hình', keywords: ['man hinh'] },
-  { category: 'DISPLAY_AUDIO', label: 'Loa', keywords: ['loa'] },
-  { category: 'DISPLAY_AUDIO', label: 'Amply', keywords: ['amply'] },
-  { category: 'CLEANING_APPLIANCE', label: 'Robot hút bụi', keywords: ['robot hut bui'] },
-  { category: 'CLEANING_APPLIANCE', label: 'Máy hút bụi', keywords: ['may hut bui'] },
-  { category: 'CLEANING_APPLIANCE', label: 'Máy lau nhà', keywords: ['may lau nha'] },
-  { category: 'AIR_WATER_TREATMENT', label: 'Máy lọc không khí', keywords: ['may loc khong khi'] },
-  { category: 'AIR_WATER_TREATMENT', label: 'Máy hút ẩm', keywords: ['may hut am'] },
-  { category: 'AIR_WATER_TREATMENT', label: 'Máy tạo ẩm', keywords: ['may tao am'] },
-  { category: 'COOLING_HEATING', label: 'Máy sưởi', keywords: ['may suoi', 'quat suoi', 'den suoi'] },
-];
-
 @Injectable()
 export class AiIntentGateService {
+  constructor(
+    private readonly deviceCatalog: AiWebDeviceCatalogService =
+      new AiWebDeviceCatalogService(),
+  ) {}
+
   analyze(message: string): AiIntentGateResult {
+    // Phân loại intent bằng rule, trích xuất device/symptom và quyết định có trả lời trực tiếp hay không.
     const originalText = (message ?? '').trim();
     const normalizedText = this.normalizeIntentText(originalText);
     const expandedText = this.expandCommonAbbreviations(normalizedText);
@@ -232,6 +186,7 @@ export class AiIntentGateService {
   }
 
   normalizeIntentText(text: string): string {
+    // Chuẩn hóa câu người dùng thành chữ thường không dấu để rule so khớp ổn định.
     return (text ?? '')
       .toLowerCase()
       .normalize('NFD')
@@ -243,6 +198,7 @@ export class AiIntentGateService {
   }
 
   expandCommonAbbreviations(normalizedText: string): string {
+    // Mở rộng các cách viết tắt phổ biến trước khi chạy rule nhận diện.
     let text = ` ${normalizedText} `;
 
     const replacements: Array<[RegExp, string]> = [
@@ -269,26 +225,22 @@ export class AiIntentGateService {
   }
 
   private hasMojibakeSignal(originalText: string): boolean {
+    // Nhận biết dấu hiệu lỗi encoding để tránh phân tích sai intent kỹ thuật.
     return [/Ãƒ./, /Ã‚./, /Ã¡Âº./, /Ã¡Â»./, /ï¿½/, /�/].some((pattern) =>
       pattern.test(originalText),
     );
   }
 
   private detectDeviceRule(expandedText: string) {
-    return DEVICE_RULES.find((rule) =>
-      this.isSupportedWebDeviceRule(rule) &&
-      rule.keywords.some((keyword) => this.hasWholeWord(expandedText, keyword)),
-    );
-  }
-
-  private isSupportedWebDeviceRule(rule: DeviceRule): boolean {
-    return rule.keywords.some((keyword) => SUPPORTED_WEB_DEVICE_KEYWORDS.has(keyword));
+    // Tìm thiết bị đầu tiên vừa khớp từ khóa vừa thuộc allowlist của web.
+    return this.deviceCatalog.collectMentions(expandedText)[0] ?? null;
   }
 
   private isGreetingIntent(
     expandedText: string,
     hasProblemContext: boolean,
   ): boolean {
+    // Chỉ coi là lời chào khi câu không đồng thời chứa dấu hiệu sự cố hoặc thiết bị.
     if (hasProblemContext) {
       return false;
     }
@@ -299,6 +251,7 @@ export class AiIntentGateService {
   }
 
   private hasExplicitBookingPhrase(expandedText: string): boolean {
+    // Phát hiện câu khẳng định rõ ý muốn đặt thợ thay vì suy đoán từ hội thoại chung.
     return this.includesAnyPhrase(expandedText, [
       'dat tho',
       'goi tho',
@@ -310,6 +263,7 @@ export class AiIntentGateService {
   }
 
   private isServiceScopeQuestion(expandedText: string): boolean {
+    // Nhận diện câu hỏi về danh mục thiết bị SmartElec hỗ trợ trên website.
     return this.includesAnyPhrase(expandedText, [
       'sua chua thiet bi gi',
       'sua duoc thiet bi gi',
@@ -322,6 +276,7 @@ export class AiIntentGateService {
   }
 
   private isEmergencyIntent(originalText: string, expandedText: string): boolean {
+    // Phát hiện tín hiệu nguy hiểm để cảnh báo an toàn trước các bước chẩn đoán.
     const originalLower = originalText.toLowerCase();
     const originalEmergencyPatterns = [
       /bốc\s*khói/i,
@@ -355,6 +310,7 @@ export class AiIntentGateService {
   private inferOutOfScopeDeviceCategory(
     expandedText: string,
   ): OutOfScopeDeviceCategory | null {
+    // Phân nhóm một số thiết bị ngoài nghiệp vụ để tạo thông báo từ chối phù hợp.
     if (
       this.includesAnyPhrase(expandedText, [
         'laptop',
@@ -391,6 +347,7 @@ export class AiIntentGateService {
     detectedErrorCode: string | null;
     detectedIssueLabel: string | null;
   }): boolean {
+    // Xác định câu kỹ thuật đã đủ cụ thể từ device, symptom, mã lỗi và dấu hiệu vận hành.
     if (input.detectedErrorCode) {
       return true;
     }
@@ -464,6 +421,7 @@ export class AiIntentGateService {
     isTechnicalSpecific: boolean;
     expandedText: string;
   }): boolean {
+    // Xác định câu có ý kỹ thuật nhưng còn thiếu device hoặc symptom để hỏi bổ sung.
     if (input.isTechnicalSpecific) {
       return false;
     }
@@ -493,6 +451,7 @@ export class AiIntentGateService {
   }
 
   private inferBrand(expandedText: string): string | null {
+    // Trích xuất thương hiệu thiết bị từ bảng từ khóa nội bộ.
     const brandMap: Array<[string, string]> = [
       ['toshiba', 'Toshiba'],
       ['panasonic', 'Panasonic'],
@@ -519,6 +478,7 @@ export class AiIntentGateService {
   }
 
   private inferErrorCode(originalText: string, expandedText: string): string | null {
+    // Tìm mã lỗi từ câu gốc trước, sau đó fallback sang câu đã chuẩn hóa.
     const originalMatch = originalText.match(/\b[A-Z]{1,3}\s?\d{1,3}\b/i);
     if (originalMatch?.[0]) {
       return originalMatch[0].replace(/\s+/g, '').toUpperCase();
@@ -531,6 +491,7 @@ export class AiIntentGateService {
   }
 
   private inferIssueLabel(expandedText: string): string | null {
+    // Chuẩn hóa các cụm mô tả sự cố thành nhãn symptom nghiệp vụ.
     const emergencyIssueMap: Array<[string[], string]> = [
       [['mui khet', 'chay khet', 'bi chay', 'dang chay'], 'Có mùi khét / cháy'],
       [['boc khoi', 'co khoi'], 'Bốc khói'],
@@ -588,6 +549,7 @@ export class AiIntentGateService {
   private inferDeviceLabelFromOutOfScope(
     outOfScopeDeviceCategory: OutOfScopeDeviceCategory | null,
   ) {
+    // Chuyển nhóm thiết bị ngoài phạm vi đã biết thành nhãn hiển thị thân thiện.
     if (outOfScopeDeviceCategory === 'LAPTOP') return 'Laptop';
     if (outOfScopeDeviceCategory === 'PHONE') return 'Điện thoại';
     if (outOfScopeDeviceCategory === 'PRINTER') return 'Máy in';
@@ -596,6 +558,7 @@ export class AiIntentGateService {
   }
 
   private inferUnsupportedDeviceLabelLegacy(expandedText: string): string | null {
+    // Giữ tương thích với bảng từ khóa thiết bị ngoài phạm vi đã khai báo từ trước.
     const unsupportedDeviceMap: Array<[string[], string]> = [
       [['may quat', 'quat dien', 'quat may', 'quat ban', 'quat dung', 'quat treo'], 'Máy quạt'],
       [['may say toc', 'may uon toc', 'may ep toc'], 'Máy chăm sóc tóc'],
@@ -614,6 +577,7 @@ export class AiIntentGateService {
   }
 
   private inferUnsupportedDeviceLabel(expandedText: string): string | null {
+    // Trích tên ngoài alias để trả lời từ chối, không dùng làm device hợp lệ trong state.
     const legacyLabel = this.inferUnsupportedDeviceLabelLegacy(expandedText);
     if (legacyLabel) {
       return legacyLabel;
@@ -636,6 +600,7 @@ export class AiIntentGateService {
   }
 
   private trimUnsupportedDevicePhrase(value: string): string | null {
+    // Cắt từ đệm và phần mô tả lỗi khỏi cụm tên thiết bị ngoài phạm vi.
     const stopWords = new Set([
       'bi',
       'loi',
@@ -683,6 +648,7 @@ export class AiIntentGateService {
   }
 
   private toDisplayDeviceLabel(value: string): string {
+    // Viết hoa nhãn thiết bị ngoài phạm vi để dùng trong câu phản hồi.
     return value
       .split(/\s+/)
       .map((token) =>
@@ -701,6 +667,7 @@ export class AiIntentGateService {
     detectedErrorCode: string | null;
     outOfScopeDeviceCategory: OutOfScopeDeviceCategory | null;
   }): string | null {
+    // Sinh câu trả lời deterministic cho greeting, booking, emergency, vague và out-of-scope.
     if (input.hasMojibakeSignal) {
       return 'Mình thấy nội dung bạn gửi có vẻ bị lỗi mã hóa tiếng Việt. Bạn nhập lại ngắn gọn theo dạng “thiết bị + tình trạng lỗi” nhé.';
     }
@@ -789,10 +756,12 @@ export class AiIntentGateService {
   }
 
   private includesAnyPhrase(text: string, phrases: string[]): boolean {
+    // Kiểm tra văn bản có chứa ít nhất một cụm từ trong danh sách rule.
     return phrases.some((phrase) => text.includes(phrase));
   }
 
   private hasWholeWord(text: string, word: string): boolean {
+    // So khớp theo biên từ để tránh nhận nhầm alias nằm trong chuỗi dài hơn.
     const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp(`\\b${escaped}\\b`, 'i').test(text);
   }

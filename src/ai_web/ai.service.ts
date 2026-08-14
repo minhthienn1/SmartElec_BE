@@ -10,18 +10,20 @@ import { JobStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RagRetrievalService } from '../rag/rag-retrieval.service';
 import { RAG_LIMITS } from '../rag/rag.constants';
-import { AiConversationPersistenceService } from './ai-conversation-persistence.service';
 import { SAFE_FALLBACK_STATE, TECHNICAL_NO_RAG_FALLBACK } from './ai.constants';
-import { AiGeminiService } from './ai-gemini.service';
-import { AiGuidedDiagnosisService } from './ai-guided-diagnosis.service';
-import { AiIntentGateService } from './ai-intent-gate.service';
-import { AiRateLimitService } from './ai-rate-limit.service';
-import { AiRelatedHistoryService } from './ai-related-history.service';
-import { AiResponseBuilderService } from './ai-response-builder.service';
+import { AiIntentGateService } from './extraction/ai-intent-gate.service';
 import {
   AiStructuredExtractorService,
   StructuredExtractionResult,
-} from './ai-structured-extractor.service';
+} from './extraction/ai-structured-extractor.service';
+import { AiGeminiService } from './generation/ai-gemini.service';
+import { AiResponseBuilderService } from './generation/ai-response-builder.service';
+import { AiGuidedDiagnosisService } from './orchestration/ai-guided-diagnosis.service';
+import { AiSessionContextService } from './orchestration/ai-session-context.service';
+import { AiConversationPersistenceService } from './persistence/ai-conversation-persistence.service';
+import { AiRelatedHistoryService } from './persistence/ai-related-history.service';
+import { AiRateLimitService } from './policies/ai-rate-limit.service';
+import { AiWebDeviceCatalogService } from './policies/ai-web-device-catalog.service';
 
 type PlainState = Record<string, any>;
 
@@ -40,7 +42,13 @@ export class AiService {
     private readonly aiRateLimitService: AiRateLimitService,
     private readonly aiGeminiService: AiGeminiService,
     private readonly aiStructuredExtractorService: AiStructuredExtractorService,
-  ) {}
+    private readonly deviceCatalog: AiWebDeviceCatalogService =
+      new AiWebDeviceCatalogService(),
+    private readonly sessionContextService: AiSessionContextService =
+      new AiSessionContextService(prisma),
+  ) {
+    // Nhận các service chuyên trách để điều phối toàn bộ pipeline AI dành riêng cho website.
+  }
 
   async chatWithAI(
     userId: number,
@@ -49,6 +57,7 @@ export class AiService {
     imageBase64?: string,
     history: any[] = [],
   ) {
+    // Điều phối một lượt chat: validate, rule, extractor, diagnosis, RAG/LLM và persistence.
     if (!message || !message.trim()) {
       throw new BadRequestException('Vui lòng nhập nội dung cần tư vấn.');
     }
@@ -67,7 +76,7 @@ export class AiService {
       userId,
       sessionId,
     );
-    const sessionContext = await this.getSessionContext(sessionId);
+    const sessionContext = await this.sessionContextService.getSessionContext(sessionId);
 
     if (sessionContext && sessionContext.status !== JobStatus.AI_CONSULTING) {
       throw new BadRequestException(
@@ -76,7 +85,7 @@ export class AiService {
     }
 
     let intentGate = this.aiIntentGateService.analyze(message);
-    let effectivePrevState = this.seedPrevStateFromSessionContext(
+    let effectivePrevState = this.sessionContextService.seedPreviousState(
       this.ensurePlainState(prevState),
       sessionContext,
     );
@@ -164,8 +173,9 @@ export class AiService {
     const userPrompt = this.aiResponseBuilderService.buildUserPrompt({
       ragContext: this.aiResponseBuilderService.buildRagContext(ragResults),
       rlhfInstruction: '',
-      deviceContext: await this.buildDeviceContext(userId),
-      lastStateContext: this.buildLastStateContext(effectivePrevState),
+      deviceContext: await this.sessionContextService.buildDeviceContext(userId),
+      lastStateContext:
+        this.sessionContextService.buildLastStateContext(effectivePrevState),
       intentGate,
       cleanMessage,
     });
@@ -226,65 +236,16 @@ export class AiService {
   }
 
   async saveFeedback(logId: number, feedback: 'LIKE' | 'DISLIKE') {
+    // Chuyển feedback người dùng sang persistence service để cập nhật reasoning log idempotent.
     return this.aiConversationPersistenceService.saveFeedback(logId, feedback);
   }
 
   async getGoldenExamples(category: string, limit = 2) {
+    // Lấy các reasoning log chất lượng cao theo nhóm thiết bị để tham chiếu khi cần.
     return this.aiConversationPersistenceService.getGoldenExamples(
       category,
       limit,
     );
-  }
-
-  private async getSessionContext(sessionId: number | null) {
-    if (!sessionId) {
-      return null;
-    }
-
-    return this.prisma.chatSession.findUnique({
-      where: { id: sessionId },
-      select: {
-        id: true,
-        status: true,
-        deviceType: true,
-        symptom: true,
-        aiSummary: true,
-      },
-    });
-  }
-
-  private async buildDeviceContext(userId: number) {
-    const devices = await this.prisma.device.findMany({
-      where: { userId },
-      select: {
-        category: true,
-        brandName: true,
-        modelCode: true,
-      },
-    });
-
-    if (devices.length === 0) {
-      return '';
-    }
-
-    return `\n[THÔNG TIN THIẾT BỊ KHÁCH HÀNG]: ${devices
-      .map((device) => {
-        const brand = device.brandName?.trim() || 'Không rõ hãng';
-        const category = device.category?.trim() || 'Thiết bị';
-        const model = device.modelCode?.trim()
-          ? ` (${device.modelCode.trim()})`
-          : '';
-        return `${brand} ${category}${model}`;
-      })
-      .join(', ')}`;
-  }
-
-  private buildLastStateContext(prevState: PlainState | null) {
-    if (!prevState) {
-      return '\n[TRẠNG THÁI HIỆN TẠI]: Phiên chat mới, chưa có trạng thái trước đó.';
-    }
-
-    return `\n[TRẠNG THÁI HIỆN TẠI]: ${JSON.stringify(prevState)}`;
   }
 
   private async enrichFromStructuredExtractor(input: {
@@ -292,6 +253,7 @@ export class AiService {
     prevState: PlainState | null;
     intentGate: any;
   }) {
+    // Dùng structured extractor làm fallback, kiểm tra confidence rồi merge kết quả vào rule state.
     const prevState = this.ensurePlainState(input.prevState) || {};
     const intentGate = { ...input.intentGate };
     const previousDeviceKey = this.normalizeDeviceKey(prevState.device);
@@ -404,6 +366,7 @@ export class AiService {
     prevState: PlainState,
     intentGate: any,
   ) {
+    // Bỏ qua extractor khi rule đã đủ chắc chắn hoặc đang có dấu hiệu chuyển thiết bị.
     if (this.countSupportedDeviceMentions(originalText) > 1) {
       return false;
     }
@@ -431,23 +394,12 @@ export class AiService {
   }
 
   private countSupportedDeviceMentions(originalText: string) {
-    const normalized = this.normalizeText(originalText);
-    const deviceGroups = [
-      ['may lanh', 'dieu hoa'],
-      ['may giat'],
-      ['tu lanh', 'cai tu', 'tu dong'],
-      ['lo vi song', 'microwave'],
-      ['may rua bat', 'may rua chen'],
-      ['bep tu'],
-      ['may suoi', 'quat suoi', 'den suoi'],
-    ];
-
-    return deviceGroups.filter((keywords) =>
-      keywords.some((keyword) => normalized.includes(keyword)),
-    ).length;
+    // Đếm số nhóm thiết bị thuộc alias web xuất hiện trong cùng một câu.
+    return this.deviceCatalog.countMentions(originalText);
   }
 
   private syncIntentGateFromExtraction(intentGate: any) {
+    // Đồng bộ lại cờ intent sau khi extractor bổ sung được device hoặc symptom.
     const hasDevice =
       typeof intentGate?.detectedDeviceLabel === 'string' &&
       intentGate.detectedDeviceLabel.trim().length > 0;
@@ -488,6 +440,7 @@ export class AiService {
       symptom?: string | null;
     } | null;
   }) {
+    // Truy vấn chunk RAG theo query, quyền truy cập và metadata thiết bị, có fallback ngưỡng thấp.
     const user = await this.prisma.user.findUnique({
       where: { id: input.userId },
       select: { role: true },
@@ -548,6 +501,7 @@ export class AiService {
       aiSummary?: string | null;
     } | null,
   ) {
+    // Chuẩn hóa payload cuối cho FE, gồm state, symptom label, booking flag và AI summary.
     const state = this.ensurePlainState(parsed?.state) || {};
     const risk = this.normalizeRisk(state.risk || prevState?.risk || 'UNKNOWN');
     const symptomDetail =
@@ -610,6 +564,7 @@ export class AiService {
     risk: 'GREEN' | 'YELLOW' | 'RED' | 'UNKNOWN';
     aiText: string;
   }) {
+    // Tạo bản tóm tắt có cấu trúc từ device, symptom, risk và nội dung tư vấn cuối.
     const headlineParts = [input.device, input.symptomLabel].filter(Boolean);
     const headline =
       headlineParts.length > 0
@@ -631,6 +586,7 @@ export class AiService {
   }
 
   private async resolveRelatedHistory(userId: number, finalized: any) {
+    // Tìm một ca cũ liên quan sau khi lượt chat đã được lưu, nhưng không làm hỏng flow chính nếu lỗi.
     const device = this.cleanText(finalized?.state?.device);
     const brand = this.cleanText(finalized?.state?.brand);
 
@@ -659,6 +615,7 @@ export class AiService {
   }
 
   private ensurePlainState(value: unknown): PlainState | null {
+    // Chỉ nhận object thuần làm state để tránh truy cập thuộc tính trên null, mảng hoặc primitive.
     return value && typeof value === 'object' && !Array.isArray(value)
       ? (value as PlainState)
       : null;
@@ -667,6 +624,7 @@ export class AiService {
   private normalizeStructuredExtractionForWebScope(
     extracted: StructuredExtractionResult,
   ): StructuredExtractionResult {
+    // Khóa device từ LLM theo allowlist web và loại các thiết bị ngoài phạm vi khỏi extraction.
     const normalized: StructuredExtractionResult = { ...extracted };
     const canonicalDevice = this.resolveSupportedWebDeviceLabel(extracted.device);
 
@@ -691,63 +649,23 @@ export class AiService {
     return normalized;
   }
 
-  private seedPrevStateFromSessionContext(
-    prevStateValue: PlainState | null,
-    sessionContext: {
-      deviceType?: string | null;
-      symptom?: string | null;
-      aiSummary?: string | null;
-    } | null,
-  ): PlainState {
-    const prevState = prevStateValue ? { ...prevStateValue } : {};
-
-    if (!this.cleanText(prevState.device) && this.cleanText(sessionContext?.deviceType)) {
-      prevState.device = sessionContext?.deviceType?.trim();
-    }
-
-    if (!this.cleanText(prevState.symptom) && this.cleanText(sessionContext?.symptom)) {
-      prevState.symptom = sessionContext?.symptom?.trim();
-    }
-
-    if (
-      !this.cleanText(prevState.aiSummaryText) &&
-      this.cleanText(sessionContext?.aiSummary)
-    ) {
-      prevState.aiSummaryText = sessionContext?.aiSummary?.trim();
-    }
-
-    return prevState;
-  }
-
   private cleanText(value: unknown) {
+    // Lấy chuỗi có nội dung đã trim hoặc trả null.
     return typeof value === 'string' && value.trim() ? value.trim() : null;
   }
 
   private resolveSupportedWebDeviceLabel(value: unknown) {
+    // Chỉ chấp nhận nhãn thiết bị khớp alias nội bộ được chatbot web hỗ trợ.
     const cleaned = this.cleanText(value);
     if (!cleaned) {
       return null;
     }
 
-    const normalized = this.normalizeText(cleaned);
-    const supportedAliases = [
-      ['may lanh', 'dieu hoa'],
-      ['may giat'],
-      ['tu lanh', 'cai tu', 'tu dong'],
-      ['lo vi song', 'microwave'],
-      ['may rua bat', 'may rua chen'],
-      ['bep tu'],
-      ['may suoi', 'quat suoi', 'den suoi'],
-    ];
-
-    return supportedAliases.some((aliases) =>
-      aliases.some((alias) => normalized === alias || normalized.includes(alias)),
-    )
-      ? cleaned
-      : null;
+    return this.deviceCatalog.resolve(cleaned) ? cleaned : null;
   }
 
   private normalizeText(value: string) {
+    // Chuẩn hóa văn bản không dấu, chữ thường để kiểm tra alias và symptom.
     return (value ?? '')
       .toLowerCase()
       .normalize('NFD')
@@ -759,6 +677,7 @@ export class AiService {
   }
 
   private normalizeDeviceKey(value: unknown) {
+    // Quy đổi các alias đồng nghĩa về một key để so sánh device switch chính xác.
     const normalized = this.normalizeText(
       typeof value === 'string' ? value : '',
     );
@@ -767,14 +686,11 @@ export class AiService {
       return '';
     }
 
-    if (normalized === 'may lanh' || normalized === 'dieu hoa') {
-      return 'air_conditioner';
-    }
-
-    return normalized;
+    return this.deviceCatalog.normalizeKey(value) || normalized;
   }
 
   private normalizeRisk(value: unknown): 'GREEN' | 'YELLOW' | 'RED' | 'UNKNOWN' {
+    // Giới hạn risk về enum mà FE và persistence hiểu được.
     if (value === 'GREEN' || value === 'YELLOW' || value === 'RED') {
       return value;
     }
@@ -787,6 +703,7 @@ export class AiService {
     state: PlainState;
     prevState: PlainState | null;
   }) {
+    // Xác định CTA đặt thợ có được mở từ explicit booking hoặc phase chẩn đoán hay chưa.
     if (input.parsed?.is_booking_triggered === true) {
       return true;
     }
@@ -807,6 +724,7 @@ export class AiService {
   }
 
   private toSymptomLabel(value: string | null) {
+    // Rút gọn mô tả symptom tự nhiên thành nhãn ngắn dùng cho header và summary.
     if (!value) {
       return null;
     }
