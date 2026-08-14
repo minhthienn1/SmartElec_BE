@@ -13,12 +13,14 @@ import {
   RagConversationImportSource,
 } from './dto/import-rag-conversation.dto';
 
+//2 loại đánh giá chính: 1 là do khách hàng đánh giá, 2 là do AI đánh giá
 type ConversationCandidateType =
   | 'CUSTOMER_5_STAR'
   | 'CUSTOMER_4_STAR'
   | 'AI_8_10'
   | 'AI_6_7';
 
+//Kiểu dữ liệu trả về cho 1 hội thoại đủ tiêu chuẩn để làm RAG
 type ConversationCandidateQuery = {
   type?: string;
   search?: string;
@@ -49,28 +51,33 @@ export class AdminRagKnowledgeService {
     private readonly prisma: PrismaService,
     private readonly ragService: RagService,
     private readonly ragIngestionService: RagIngestionService,
-  ) {}
+  ) { }
 
   getDocuments() {
     return this.ragService.getAllDocuments();
   }
 
+  //Lấy danh sách RAG hiện có
   getStats() {
     return this.ragService.getDocumentStats();
   }
 
+  //Lấy tài liệu chi tiết
   getDocumentDetail(id: number) {
     return this.ragService.getDocumentDetail(id);
   }
 
+  //Lấy danh sách tài liệu RAG chunk sau khi embedded
   getDocumentChunks(id: number, query: RagDocumentChunksQueryDto) {
     return this.ragService.getDocumentChunks(id, query);
   }
 
+  //Lấy chi tiết chunk RAG
   getChunkDetail(chunkId: number) {
     return this.ragService.getChunkDetail(chunkId);
   }
 
+  //tạo tài liệu
   createDocument(dto: IngestDocumentDto) {
     return this.ragService.ingestDocument(dto);
   }
@@ -79,10 +86,12 @@ export class AdminRagKnowledgeService {
     return this.ragService.updateDocument(id, dto);
   }
 
+  //Đưa tài liệu sang trạng thái lưu trữ thay vì xóa hẳn.
   archiveDocument(id: number, dto: ArchiveRagDocumentDto) {
     return this.ragService.archiveDocument(id, dto);
   }
 
+  //cập nhật lại index khi có thay đổi về nội dung, metadata, tags, ...
   reindexDocument(id: number) {
     return this.ragService.reindexDocument(id);
   }
@@ -91,6 +100,7 @@ export class AdminRagKnowledgeService {
     return this.ragService.deleteDocument(id);
   }
 
+  //chuyển request sang RAG ingestion 
   importDocumentFile(
     file: Express.Multer.File,
     dto: ImportRagFileDto,
@@ -99,37 +109,53 @@ export class AdminRagKnowledgeService {
     return this.ragIngestionService.importFile(file, dto, uploadedById);
   }
 
+  //hàm đọc file Rag sau đó gợi ý metadata 
   suggestImportMetadata(file: Express.Multer.File) {
     return this.ragIngestionService.suggestImportMetadata(file);
   }
 
+  //Lấy các cuộc hội thoại có chất lượng tốt để Admin cân nhắc import vào RAG.
   async getConversationCandidates(query: ConversationCandidateQuery) {
     const [reviewCandidates, aiCandidates, importedDocuments] =
       await Promise.all([
         this.getReviewConversationCandidates(),
         this.getAiConversationCandidates(),
         this.prisma.ragDocument.findMany({
-          where: { source: { startsWith: 'CHAT_SESSION:' } },
+          where: {
+            source: {
+              startsWith: 'CHAT_SESSION:'
+            }
+          },
           select: { id: true, source: true },
         }),
       ]);
 
+    //biến dl thành map để dễ select 
     const importedMap = new Map(
       importedDocuments
         .filter((document) => document.source)
         .map((document) => [document.source as string, document.id]),
     );
 
+    //filter theo type và search keyword
     const keyword = query.search?.trim().toLowerCase();
     const type = query.type?.trim();
 
+    //sử dụng spread gộp 2 lại với nhau 
     return [...reviewCandidates, ...aiCandidates]
+      //Duyệt qua từng phần tử trong mảng và tạo ra một phần tử mới tương ứng
       .map((candidate) => ({
         ...candidate,
         importedDocumentId:
           importedMap.get(`CHAT_SESSION:${candidate.sessionId}`) ?? null,
-        alreadyImported: importedMap.has(`CHAT_SESSION:${candidate.sessionId}`),
+        alreadyImported:
+          //hàm .has() không lấy document ID nó hỏi xem Key này có tồn tại trong Map không ( true / false )
+          importedMap.has(
+            `CHAT_SESSION:${candidate.sessionId}`
+          ),
       }))
+
+      //filter theo kiểu type
       .filter((candidate) => !type || type === 'ALL' || candidate.type === type)
       .filter((candidate) => {
         if (!keyword) return true;
@@ -150,12 +176,14 @@ export class AdminRagKnowledgeService {
       });
   }
 
+  //thời điểm admin bấm nút convert Session sang RAG
   async importConversationCandidate(dto: ImportRagConversationDto) {
     const existingDocument = await this.prisma.ragDocument.findFirst({
       where: { source: `CHAT_SESSION:${dto.sessionId}` },
       select: { id: true },
     });
 
+    //kiểm tra đã có trong DB chưa , nếu chưa thì block
     if (existingDocument) {
       throw new BadRequestException(
         'Cuộc trò chuyện này đã được import vào kho RAG.',
@@ -176,12 +204,14 @@ export class AdminRagKnowledgeService {
       );
     }
 
+    //biến oject phức tạp thành chuỗi plain text string dễ hiểu
     const content = this.buildConversationRagContent({
       session,
       evaluation,
       note: dto.note,
     });
 
+    //tạo tài liệu mới vào bên trong RAG
     return this.ragService.ingestDocument({
       title: `Cuộc trò chuyện SE-${session.id} - ${session.deviceType || 'Thiết bị'}`,
       description:
@@ -294,14 +324,14 @@ export class AdminRagKnowledgeService {
           ...session,
           aiLogs: log
             ? [
-                {
-                  userMsg: '',
-                  aiResponse: log.aiResponse,
-                  score: log.score,
-                  deviceCategory: log.deviceCategory,
-                  createdAt: log.createdAt,
-                },
-              ]
+              {
+                userMsg: '',
+                aiResponse: log.aiResponse,
+                score: log.score,
+                deviceCategory: log.deviceCategory,
+                createdAt: log.createdAt,
+              },
+            ]
             : [],
         },
         type: score >= 8 ? 'AI_8_10' : 'AI_6_7',
@@ -353,6 +383,7 @@ export class AdminRagKnowledgeService {
     } as const;
   }
 
+  //“chuẩn hóa object trả về” để FE nhận cùng một cấu trúc dù candidate đến từ customer review hay AI evaluation
   private mapConversationCandidate(params: {
     session: Awaited<ReturnType<typeof this.getConversationForImport>>;
     type: ConversationCandidateType;
@@ -394,6 +425,7 @@ export class AdminRagKnowledgeService {
     };
   }
 
+  //Đây là helper dùng để tạo reviewCandidates
   private async getConversationForImport(sessionId: number) {
     const [session, aiLogs] = await Promise.all([
       this.prisma.chatSession.findUnique({
@@ -420,6 +452,7 @@ export class AdminRagKnowledgeService {
     return { ...session, aiLogs };
   }
 
+  //Lý do nào khiến conversation này đủ chất lượng để import?
   private async resolveConversationEvaluation(
     sessionId: number,
     sourceType: RagConversationImportSource,
@@ -488,10 +521,10 @@ export class AdminRagKnowledgeService {
           createdAt: log.createdAt,
           sender: session.user
             ? {
-                id: session.user.id,
-                fullName: session.user.fullName,
-                role: 'USER',
-              }
+              id: session.user.id,
+              fullName: session.user.fullName,
+              role: 'USER',
+            }
             : null,
         });
       }
@@ -509,6 +542,8 @@ export class AdminRagKnowledgeService {
     });
   }
 
+  //tạo một đoạn preview ngắn của toàn bộ cuộc hội thoại
+  //dùng để FE hiện bản tóm tắt nhanh
   private buildConversationPreview(messages: ConversationMessage[]) {
     const text = messages
       .map((message) => message.content)
@@ -519,6 +554,7 @@ export class AdminRagKnowledgeService {
     return text.length > 260 ? `${text.slice(0, 260)}...` : text;
   }
 
+  //hàm đóng gói 1 cuộc trò chuyện thành nội dung RAG hoàn chỉnh
   private buildConversationRagContent(params: {
     session: Awaited<ReturnType<typeof this.getConversationForImport>>;
     evaluation: NonNullable<
@@ -544,10 +580,9 @@ export class AdminRagKnowledgeService {
       `Mã phiên: SE-${session.id}`,
       `Loại tài liệu: Cuộc trò chuyện với người dùng`,
       `Nguồn đánh giá: ${evaluation.label}`,
-      `AI conclusion: ${
-        evaluation.sourceType === RagConversationImportSource.AI_CONCLUSION
-          ? 'Có - cuộc trò chuyện được AI kết luận'
-          : 'Không - cuộc trò chuyện được khách hàng đánh giá'
+      `AI conclusion: ${evaluation.sourceType === RagConversationImportSource.AI_CONCLUSION
+        ? 'Có - cuộc trò chuyện được AI kết luận'
+        : 'Không - cuộc trò chuyện được khách hàng đánh giá'
       }`,
       `Thiết bị: ${session.deviceType || 'Chưa xác định'}`,
       `Hãng/model: ${[session.brand, session.modelCode].filter(Boolean).join(' / ') || 'Chưa xác định'}`,

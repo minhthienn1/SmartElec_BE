@@ -71,6 +71,7 @@ const TRANSIENT_BLOCKING_FLAGS = new Set([
   'DEVICE_SWITCH_DETECTED',
 ]);
 
+// rule base
 const SAFETY_PATTERNS: Array<[RegExp, string]> = [
   [/\bboc khoi\b|\bco khoi\b/u, 'Có khói hoặc bốc khói'],
   [/\bmui khet\b/u, 'Có mùi khét'],

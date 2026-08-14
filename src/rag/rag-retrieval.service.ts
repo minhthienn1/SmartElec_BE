@@ -40,6 +40,9 @@ export class RagRetrievalService {
     private readonly ragEmbeddingService: RagEmbeddingService,
   ) {}
 
+  //nhận câu hỏi user -> biến thành vector embedding 
+  // -> truy vấn database để tìm các chunk liên quan 
+  // -> trả về kết quả
   async findRelevantChunks(
     params: RetrievalParams,
   ): Promise<{ message: string; results: RetrievalRow[] }> {
@@ -59,15 +62,19 @@ export class RagRetrievalService {
 
     try {
       const normalizedQuery = query.trim().replace(/\s+/g, ' ');
+
+      //biến câu hỏi thành vector
       const embeddingValues =
         await this.ragEmbeddingService.generateEmbedding(normalizedQuery);
+
+      //chuyển đổi vector để postgre có thể so sánh
       const vector = this.ragEmbeddingService.toPgVector(embeddingValues);
 
       const whereClauses: Prisma.Sql[] = [
-        Prisma.sql`c."isActive" = true`,
-        Prisma.sql`d."isActive" = true`,
-        Prisma.sql`d."status" = ${RagDocumentStatus.READY}::"RagDocumentStatus"`,
-        Prisma.sql`c."embedding" IS NOT NULL`,
+        Prisma.sql`c."isActive" = true`, //chunk
+        Prisma.sql`d."isActive" = true`, //Document đang active
+        Prisma.sql`d."status" = ${RagDocumentStatus.READY}::"RagDocumentStatus"`, //Document đã READY
+        Prisma.sql`c."embedding" IS NOT NULL`, //Chunk có embedding
       ];
 
       if (accessLevel === AccessLevel.BASIC) {

@@ -61,6 +61,7 @@ export class RagFileParserService {
     return fileType;
   }
 
+  //xác định type của file import
   inferFileType(file: Express.Multer.File): RagFileType {
     const extension = this.getFileExtension(file);
     const mimeType = (file.mimetype || '').toLowerCase();

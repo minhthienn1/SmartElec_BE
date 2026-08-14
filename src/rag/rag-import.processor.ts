@@ -4,7 +4,7 @@ import { Job } from 'bullmq';
 
 import { RagIngestionService } from './rag-ingestion.service';
 
-@Processor('rag-import-queue')
+@Processor('rag-import-queue') //decorator của BullMQ/NestJS
 export class RagImportProcessor extends WorkerHost {
   private readonly logger = new Logger(RagImportProcessor.name);
 
@@ -17,6 +17,7 @@ export class RagImportProcessor extends WorkerHost {
 
     this.logger.log(`Nhận job import RAG documentId=${documentId}`);
 
+    //Đây mới là chỗ chuyển từ “job trong queue” sang “logic xử lý RAG thật”.
     await this.ragIngestionService.processImportedDocument(documentId);
   }
 }

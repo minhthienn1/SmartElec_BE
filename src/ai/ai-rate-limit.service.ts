@@ -5,7 +5,7 @@ export class AiRateLimitService {
     private readonly logger = new Logger(AiRateLimitService.name);
     private readonly lastRequestTime = new Map<number, number>();
 
-    assertRateLimit(userId: number): void {
+    assertRateLimit(userId: number): void { 
         const now = Date.now();
         const lastTime = this.lastRequestTime.get(userId) || 0;
 

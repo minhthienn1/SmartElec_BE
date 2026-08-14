@@ -20,19 +20,23 @@ export class RagEmbeddingService {
   private embeddingQueue: Promise<void> = Promise.resolve();
   private lastEmbeddingAt = 0;
 
+  //Khởi tạo Gemini
   constructor(private readonly configService: ConfigService) {
     const apiKey = this.configService.get<string>('GEMINI_API_KEY') || '';
 
     this.genAI = new GoogleGenerativeAI(apiKey);
+
     this.embeddingModel = this.genAI.getGenerativeModel({
       model: 'gemini-embedding-001',
     });
   }
 
+  //dùng khi Gemini báo rate limit
   private sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  //trả lỗi nếu có quá nhiều request đến Gemini Embedding
   private createGeminiRateLimitException() {
     return new HttpException(
       {
@@ -44,6 +48,7 @@ export class RagEmbeddingService {
     );
   }
 
+  //Kiểm tra một error có phải lỗi quota/rate limit của Gemini hay không
   private isGeminiQuotaError(error: unknown) {
     if (typeof error === 'string') {
       const message = error.toLowerCase();
@@ -81,6 +86,7 @@ export class RagEmbeddingService {
     );
   }
 
+  //Không gọi Gemini embedding quá nhanh liên tục, kiểu như phải chờ 1 khoảng thời gian sau task A được gọi
   private async waitForNextEmbeddingSlot() {
     const waitMs = Math.max(
       0,
@@ -94,9 +100,13 @@ export class RagEmbeddingService {
     this.lastEmbeddingAt = Date.now();
   }
 
+  //đảm bảo các tác vụ embedded chạy tuần tự và không chạy đồng thời
+  //worker là Công việc embedding mà tôi muốn chạy
   private async enqueueEmbedding<T>(worker: () => Promise<T>): Promise<T> {
-    const run = this.embeddingQueue.then(worker, worker);
+    const run = this.embeddingQueue.then(worker, worker); //Đây là phần tạo queue.
 
+    //Khi công việc hiện tại kết thúc, bất kể thành công hay lỗi
+    //đánh dấu rằng slot này đã hoàn tất.
     this.embeddingQueue = run.then(
       () => undefined,
       () => undefined,
@@ -106,19 +116,24 @@ export class RagEmbeddingService {
   }
 
   async generateEmbedding(text: string): Promise<number[]> {
+    //đưa 1 tác vụ vào hàng đợi
     return this.enqueueEmbedding(async () => {
-      const retryDelays = RAG_LIMITS.EMBEDDING_RETRY_DELAYS_MS;
+      const retryDelays = RAG_LIMITS.EMBEDDING_RETRY_DELAYS_MS; //tăng thời gian chờ mỗi lần lỗi
 
       for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
         try {
-          await this.waitForNextEmbeddingSlot();
+          await this.waitForNextEmbeddingSlot(); //không req quá sát nhau
 
           const result = await this.embeddingModel.embedContent({
-            content: { parts: [{ text }], role: 'user' },
+            content: {
+              parts: [{ text }],
+              role: 'user'
+            },
             // @ts-ignore SDK cũ có thể chưa khai báo field này nhưng API vẫn hỗ trợ.
             outputDimensionality: 768,
           });
 
+          //nếu result.embedding không tồn tại thì không crash ngay mà values = undefined
           const values = result.embedding?.values;
 
           if (!Array.isArray(values) || values.length === 0) {
@@ -162,6 +177,7 @@ export class RagEmbeddingService {
     });
   }
 
+  //đổi vector đó sang format để PostgreSQL pgvector lưu được
   toPgVector(values: number[]): string {
     if (!Array.isArray(values) || values.length === 0) {
       this.logger.error('Embedding rỗng, không thể chuyển sang pgvector');

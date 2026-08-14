@@ -18,28 +18,38 @@ export class RagChunkingService {
   private readonly minChars = RAG_LIMITS.MIN_CHUNK_CHARS;
 
   chunk(params: ChunkingParams): ChunkingResult[] {
+    //lấy dữ liệu đầu vào
     const {
       content,
       maxChars = RAG_LIMITS.DEFAULT_CHUNK_MAX_CHARS,
       overlapChars = RAG_LIMITS.DEFAULT_CHUNK_OVERLAP_CHARS,
     } = params;
 
+    //chuẩn hóa dữ liệu đầu vào
     const normalized = this.normalize(content);
     if (!normalized) {
       return [];
     }
 
+    //chia các chunk dựa theo heading
+    //ưu tiên chia chunk theo cấu trúc tài liệu trước và tách thành các session nhỏ
     const sections = this.splitByHeadings(normalized);
+
+    //chia session thành các chunk nhỏ hơn dựa theo maxChars
+    //hàm flatmap sẽ trả về 1 mảng các chunk nhỏ
     const rawChunks = sections.flatMap((section) =>
       this.chunkSection(section, maxChars),
     );
 
+    //gặp chunk quá bé với chunk trước đó
     const mergedChunks = this.mergeTinyChunks(rawChunks, maxChars);
+
+    //gán nội dung cuối chunk trước vào chunk sau để tạo ngữ cảnh
     const finalChunks = this.applySemanticOverlap(mergedChunks, overlapChars);
 
     return finalChunks
       .map((chunk) => chunk.trim())
-      .filter(Boolean)
+      .filter(Boolean) //xóa những chunk rỗng
       .map((chunk, index) => ({
         chunkIndex: index,
         content: chunk,
@@ -79,6 +89,7 @@ export class RagChunkingService {
     );
   }
 
+  //lấy các chunk theo heading
   private splitByHeadings(text: string): string[] {
     const lines = text.split('\n');
     const sections: string[] = [];
@@ -106,6 +117,7 @@ export class RagChunkingService {
     return sections.filter(Boolean);
   }
 
+  //chia session thành các chunk nhỏ hơn dựa theo maxChars
   private chunkSection(section: string, maxChars: number): string[] {
     if (section.length <= maxChars) {
       return [section];
@@ -147,6 +159,7 @@ export class RagChunkingService {
     return chunks;
   }
 
+  //chia 1 đoạn text dài thành các chunk nhỏ hơn dựa theo maxChars
   private splitLongText(text: string, maxChars: number): string[] {
     const sentences =
       text.match(/[^.!?。！？:;]+[.!?。！？:;]?/gu)?.map((item) => item.trim()) ??
@@ -218,6 +231,7 @@ export class RagChunkingService {
       const last = merged[merged.length - 1];
 
       if (last && chunk.length < this.minChars) {
+
         const combined = `${last}\n${chunk}`;
 
         if (combined.length <= maxChars) {
@@ -232,6 +246,7 @@ export class RagChunkingService {
     return merged;
   }
 
+  //lấy ít nhất 1 đoạn nội dung cuối chunk trước và gán vào chunk sau
   private applySemanticOverlap(chunks: string[], overlapChars: number): string[] {
     if (overlapChars <= 0 || chunks.length <= 1) {
       return chunks;
@@ -242,6 +257,7 @@ export class RagChunkingService {
         return chunk;
       }
 
+      //lấy phần cuối của chunk trước, nhưng không vượt quá overlapChars
       const context = this.getTailContext(chunks[index - 1], overlapChars);
       if (!context) {
         return chunk;

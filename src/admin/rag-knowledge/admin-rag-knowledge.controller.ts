@@ -43,6 +43,7 @@ type AuthenticatedRequest = {
   };
 };
 
+//dung lượng lớn nhất mà 1 user có thể upload file để gợi ý metadata (10MB)
 const SUGGEST_METADATA_MAX_FILE_SIZE_BYTES = Math.min(
   RAG_LIMITS.MAX_FILE_SIZE_BYTES,
   10 * 1024 * 1024,
@@ -70,16 +71,19 @@ export class AdminRagKnowledgeController {
     private readonly adminRagKnowledgeService: AdminRagKnowledgeService,
   ) { }
 
+  //lấy thống kê số lượng RAG hiện có
   @Get('stats')
   getStats() {
     return this.adminRagKnowledgeService.getStats();
   }
 
+  //lấy danh sách Rag
   @Get('documents')
   getDocuments() {
     return this.adminRagKnowledgeService.getDocuments();
   }
 
+  //tìm các cuộc hội thoại đủ tốt để làm RAG 
   @Get('conversation-candidates')
   getConversationCandidates(
     @Query('type') type?: string,
@@ -91,6 +95,7 @@ export class AdminRagKnowledgeController {
     });
   }
 
+  //thêm cuộc trò chuyện đạt tiêu chuẩn làm RAG
   @Post('import-conversation')
   importConversation(@Body() dto: ImportRagConversationDto) {
     return this.adminRagKnowledgeService.importConversationCandidate(dto);
@@ -119,6 +124,7 @@ export class AdminRagKnowledgeController {
     return this.adminRagKnowledgeService.createDocument(dto);
   }
 
+  //Hmà upload file RAG trước khi xử lý, gợi ý nội dung metadata, sau đó mới import
   @Post('suggest-metadata')
   @UseInterceptors(
     FileInterceptor('file', {
@@ -161,16 +167,21 @@ export class AdminRagKnowledgeController {
       fileFilter: RAG_FILE_FILTER,
     }),
   )
+
+  //nhận file upload , validate, sau đó gọi service để import vào RAG
   async importDocument(
     @UploadedFile() file: Express.Multer.File,
     @Body() dto: ImportRagFileDto,
     @Req() req: AuthenticatedRequest,
   ) {
+
+    //gọi hàm validate
     this.validateUploadedRagFile(file, {
       mode: 'import',
       maxFileSizeBytes: RAG_LIMITS.MAX_FILE_SIZE_BYTES,
     });
 
+    //lấy thông tin người upload
     const uploadedById = Number(
       req.user?.id || req.user?.userId || req.user?.sub,
     );

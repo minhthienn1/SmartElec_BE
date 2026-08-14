@@ -93,6 +93,7 @@ export class AuthService {
     }
   }
 
+  //verify email
   private getEmailVerificationOtpKey(userId: number, email: string) {
     return `email-verification:${userId}:${email}`;
   }
@@ -126,6 +127,7 @@ export class AuthService {
     }
   }
 
+  //nhận thông báo lỗi ( dành riêng cho zalo)
   private getZaloErrorMessage(payload: {
     error?: number | string;
     error_name?: string;
@@ -141,6 +143,7 @@ export class AuthService {
     );
   }
 
+  //nhận zalo token và gọi fetch API
   private async exchangeZaloCodeForAccessToken(
     code: string,
     codeVerifier: string,
@@ -185,6 +188,7 @@ export class AuthService {
     return payload.access_token;
   }
 
+  //lấy avata từ zalo
   private getAvatarFromZaloProfile(data: ZaloProfileData) {
     const picture = data.picture;
 
@@ -429,6 +433,7 @@ export class AuthService {
     return user;
   }
 
+  //zalo login
   async loginWithZalo(dto: ZaloLoginDto) {
     const profile = await this.resolveZaloProfile(dto);
 

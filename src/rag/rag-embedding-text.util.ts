@@ -11,6 +11,7 @@ type BuildChunkEmbeddingTextParams = {
   content: string;
 };
 
+//Hàm này kiểm tra metadata có phải object key-value hợp lệ không
 function getMetadataRecord(metadata: unknown): Record<string, unknown> | null {
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
     return null;
@@ -19,6 +20,7 @@ function getMetadataRecord(metadata: unknown): Record<string, unknown> | null {
   return metadata as Record<string, unknown>;
 }
 
+//Lấy đường dẫn heading từ metadata.
 function extractHeadingPath(metadata: unknown): string | null {
   const record = getMetadataRecord(metadata);
 
@@ -33,7 +35,8 @@ function extractHeadingPath(metadata: unknown): string | null {
       .map((item) => String(item).trim())
       .filter(Boolean);
 
-    return parts.length > 0 ? parts.join(' > ') : null;
+    //ví dụ "Chương > heading > vấn đề "
+    return parts.length > 0 ? parts.join(' > ') : null; 
   }
 
   if (typeof headingPath === 'string') {
@@ -44,6 +47,7 @@ function extractHeadingPath(metadata: unknown): string | null {
   return null;
 }
 
+//lấy số trang nếu có
 function extractPageNumber(metadata: unknown): string | null {
   const record = getMetadataRecord(metadata);
 
@@ -65,6 +69,7 @@ function extractPageNumber(metadata: unknown): string | null {
   return null;
 }
 
+//chuẩn hóa metadata dạng string
 function normalizeValue(value?: string | null): string | null {
   const trimmed = value?.trim();
 
@@ -82,6 +87,7 @@ function normalizeValue(value?: string | null): string | null {
   return trimmed;
 }
 
+//làm sạch nội dung chính của chunk
 function normalizeContent(content: string): string {
   return content
     .replace(/\r\n/g, '\n')
@@ -106,6 +112,8 @@ export function buildChunkEmbeddingText(
   const pageNumber = extractPageNumber(params.metadata);
   const content = normalizeContent(params.content);
 
+  //lưu ý: không nên đưa accessLevel vào embedding
+  // Quyền truy cập nên xử lý bằng filter ở query DB.
   const lines = [
     documentTitle ? `Tài liệu: ${documentTitle}` : null,
     category ? `Danh mục: ${category}` : null,

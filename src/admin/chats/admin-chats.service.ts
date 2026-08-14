@@ -17,6 +17,9 @@ export class AdminChatsService {
   private async attachAiConversationFallback<
     T extends {
       id: number;
+      userId: number;
+      aiSummary?: string | null;
+      createdAt: Date;
       user: { id: number; fullName: string | null; avatarUrl: string | null; role: 'USER' | 'TECHNICIAN' | 'ADMIN' };
       messages?: Array<{
         id: number;
@@ -32,22 +35,25 @@ export class AdminChatsService {
       }>;
     },
   >(sessions: T[]): Promise<T[]> {
-    const missingMessageSessionIds = sessions
-      .filter((session) => !Array.isArray(session.messages) || session.messages.length === 0)
-      .map((session) => session.id);
-
-    if (missingMessageSessionIds.length === 0) {
+    if (sessions.length === 0) {
       return sessions;
     }
 
+    const sessionIds = sessions.map((session) => session.id);
+    const userIds = Array.from(new Set(sessions.map((session) => session.userId).filter(Boolean)));
+
     const logs = await this.prisma.aiReasoningLog.findMany({
       where: {
-        sessionId: { in: missingMessageSessionIds },
+        OR: [
+          { sessionId: { in: sessionIds } },
+          { userId: { in: userIds } },
+        ],
       },
       orderBy: { createdAt: 'asc' },
       select: {
         id: true,
         sessionId: true,
+        userId: true,
         userMsg: true,
         aiResponse: true,
         createdAt: true,
@@ -55,63 +61,96 @@ export class AdminChatsService {
     });
 
     const logsBySessionId = new Map<number, typeof logs>();
+    const logsByUserId = new Map<number, typeof logs>();
 
     for (const log of logs) {
-      const items = logsBySessionId.get(log.sessionId ?? -1) ?? [];
-      items.push(log);
-      logsBySessionId.set(log.sessionId ?? -1, items);
+      if (log.sessionId) {
+        const items = logsBySessionId.get(log.sessionId) ?? [];
+        items.push(log);
+        logsBySessionId.set(log.sessionId, items);
+      } else if (log.userId) {
+        const items = logsByUserId.get(log.userId) ?? [];
+        items.push(log);
+        logsByUserId.set(log.userId, items);
+      }
     }
 
     return sessions.map((session) => {
-      if (Array.isArray(session.messages) && session.messages.length > 0) {
+      const sessionLogsBySession = logsBySessionId.get(session.id) ?? [];
+      const sessionLogsByUser = logsByUserId.get(session.userId) ?? [];
+
+      // Combine logs specifically for this session ID, or fall back to user logs if no session ID logs exist
+      const sessionLogs = sessionLogsBySession.length > 0 ? sessionLogsBySession : sessionLogsByUser;
+
+      const existingMessages = Array.isArray(session.messages) ? session.messages : [];
+      const existingContents = new Set(existingMessages.map((m) => m.content.trim()));
+
+      const syntheticMessages: NonNullable<T['messages']> = [];
+
+      for (const log of sessionLogs) {
+        if (log.userMsg?.trim() && !existingContents.has(log.userMsg.trim())) {
+          syntheticMessages.push({
+            id: -(log.id * 2),
+            sessionId: session.id,
+            senderId: session.user?.id ?? null,
+            type: 'TEXT',
+            content: log.userMsg,
+            metadata: null,
+            isRead: true,
+            isDeleted: false,
+            createdAt: log.createdAt,
+            sender: session.user ?? null,
+          });
+          existingContents.add(log.userMsg.trim());
+        }
+
+        if (log.aiResponse?.trim() && !existingContents.has(log.aiResponse.trim())) {
+          syntheticMessages.push({
+            id: -(log.id * 2 + 1),
+            sessionId: session.id,
+            senderId: null,
+            type: 'TEXT',
+            content: log.aiResponse,
+            metadata: {
+              source: 'ai_reasoning_logs',
+              logId: log.id,
+            },
+            isRead: true,
+            isDeleted: false,
+            createdAt: log.createdAt,
+            sender: null,
+          });
+          existingContents.add(log.aiResponse.trim());
+        }
+      }
+
+      if (session.aiSummary?.trim() && !existingContents.has(session.aiSummary.trim())) {
+        syntheticMessages.push({
+          id: -(session.id * 10000 + 999),
+          sessionId: session.id,
+          senderId: null,
+          type: 'TEXT',
+          content: `[Tóm tắt tư vấn AI]: ${session.aiSummary.trim()}`,
+          metadata: { source: 'ai_summary' },
+          isRead: true,
+          isDeleted: false,
+          createdAt: session.createdAt,
+          sender: null,
+        });
+        existingContents.add(session.aiSummary.trim());
+      }
+
+      if (syntheticMessages.length === 0) {
         return session;
       }
 
-      const sessionLogs = logsBySessionId.get(session.id) ?? [];
-      if (sessionLogs.length === 0) {
-        return session;
-      }
+      const mergedMessages = [...existingMessages, ...syntheticMessages].sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+      );
 
       return {
         ...session,
-        messages: sessionLogs.flatMap((log) => {
-          const syntheticMessages: NonNullable<T['messages']> = [];
-
-          if (log.userMsg?.trim()) {
-            syntheticMessages.push({
-              id: -(log.id * 2),
-              sessionId: session.id,
-              senderId: session.user.id,
-              type: 'TEXT',
-              content: log.userMsg,
-              metadata: null,
-              isRead: true,
-              isDeleted: false,
-              createdAt: log.createdAt,
-              sender: session.user,
-            });
-          }
-
-          if (log.aiResponse?.trim()) {
-            syntheticMessages.push({
-              id: -(log.id * 2 + 1),
-              sessionId: session.id,
-              senderId: null,
-              type: 'TEXT',
-              content: log.aiResponse,
-              metadata: {
-                source: 'ai_reasoning_logs',
-                logId: log.id,
-              },
-              isRead: true,
-              isDeleted: false,
-              createdAt: log.createdAt,
-              sender: null,
-            });
-          }
-
-          return syntheticMessages;
-        }),
+        messages: mergedMessages,
       };
     });
   }

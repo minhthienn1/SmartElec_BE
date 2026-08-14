@@ -98,6 +98,7 @@ export class AiStructuredExtractorService {
 
   constructor(private readonly aiGeminiService: AiGeminiService) {}
 
+  //chạy AI để trích xuất thông tin có cấu trúc từ đoạn text
   async extract(input: ExtractInput): Promise<StructuredExtractionResult | null> {
     if (!this.shouldRun(input)) {
       return null;
@@ -201,6 +202,8 @@ export class AiStructuredExtractorService {
     return null;
   }
 
+
+  //kiểm tra xem thiết bị có chạy hay không dựa vào rule base
   private shouldRun(input: ExtractInput) {
     if (input.intentGate.isEmergency) {
       return false;

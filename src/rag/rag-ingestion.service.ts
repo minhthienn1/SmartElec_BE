@@ -100,6 +100,7 @@ export class RagIngestionService {
     private readonly ragImportQueue: Queue,
   ) { }
 
+  //đặt tiêu đề cho từng chunk
   private buildChunkTitle(
     baseTitle: string,
     chunkIndex: number,
@@ -112,6 +113,7 @@ export class RagIngestionService {
     return `${baseTitle} - Phần ${chunkIndex + 1}`;
   }
 
+  //tính ước lượng số token của một đoạn text
   private estimateTokenCount(content: string) {
     return Math.max(1, Math.ceil(content.length / 4));
   }
@@ -126,13 +128,16 @@ export class RagIngestionService {
         .map((tag) => String(tag).trim())
         .filter((tag) => tag.length > 0)
       : String(tags)
-          .split(',')
-          .map((tag) => tag.trim())
-          .filter((tag) => tag.length > 0);
+        .split(',')
+        .map((tag) => tag.trim())
+        .filter((tag) => tag.length > 0);
 
     return [...new Set(normalized)];
   }
 
+  //biến tên file thành một tiêu đề dễ đọc hơn
+  // raw: huong_dan-sua_may_lanh.pdf
+  //result: huong dan sua may lanh
   private prettifyFileTitle(fileName: string) {
     return fileName
       .replace(/\.[^.]+$/, '')
@@ -156,6 +161,7 @@ export class RagIngestionService {
     return phrases.some((phrase) => text.includes(phrase));
   }
 
+  //đoán danh mục thiết bị từ một đoạn text đã được chuẩn hóa
   private inferSuggestedCategory(normalizedText: string): string | null {
     const categoryMap: Array<[string[], string]> = [
       [['may lanh', 'dieu hoa', 'dieu hoa khong khi'], 'Máy lạnh'],
@@ -178,6 +184,7 @@ export class RagIngestionService {
     return null;
   }
 
+  //đoán hãng thiết bị
   private inferSuggestedBrand(normalizedText: string): string | null {
     const brandMap: Array<[string, string]> = [
       ['daikin', 'Daikin'],
@@ -205,6 +212,7 @@ export class RagIngestionService {
     return null;
   }
 
+  //đoán mã code
   private inferSuggestedModelCode(rawText: string): string | null {
     const matches = rawText.match(/\b[A-Z0-9-]{4,20}\b/g) ?? [];
     const candidates = matches.filter((candidate) => {
@@ -227,6 +235,7 @@ export class RagIngestionService {
     return candidates[0] ?? null;
   }
 
+  //dự đoán loại tài liệu RAG cần được sử dụng
   private inferSuggestedKind(
     normalizedText: string,
     originalFileName: string,
@@ -498,6 +507,7 @@ export class RagIngestionService {
     }
   }
 
+  //lấy thông tin tài liệu từ DB theo documentId
   private async loadImportedDocument(documentId: number) {
     return this.prisma.ragDocument.findUnique({
       where: { id: documentId },
@@ -527,6 +537,7 @@ export class RagIngestionService {
     });
   }
 
+  //tải file gốc từ URL về backend và chuyển nội dung file thành Buffer để parser có thể đọc
   private async loadImportedFileBuffer(fileUrl: string) {
     if (!fileUrl) {
       throw new BadRequestException(
@@ -561,8 +572,10 @@ export class RagIngestionService {
     } as Express.Multer.File;
   }
 
+  //đưa tài liệu vào hàng đợi để xử lý nền 
   private async scheduleImportedDocumentProcessing(documentId: number) {
     try {
+      //gửi công việc đi
       await this.ragImportQueue.add(
         'process-imported-document',
         { documentId },
@@ -588,6 +601,7 @@ export class RagIngestionService {
     }
   }
 
+  //xử lý một tài liệu RAG sau khi đã được worker lấy ra khỏi queue
   async processImportedDocument(documentId: number) {
     const document = await this.loadImportedDocument(documentId);
 
@@ -603,6 +617,7 @@ export class RagIngestionService {
       return;
     }
 
+    //fall back: originalFileName -> storedFileName -> title
     const originalFileName =
       document.originalFileName || document.storedFileName || document.title;
 
@@ -611,6 +626,7 @@ export class RagIngestionService {
         `documentId=${documentId} status=PARSING originalFileName=${originalFileName}`,
       );
 
+      //Nếu document vẫn đang UPLOADED -> đổi sang PARSING
       const started = await this.prisma.ragDocument.updateMany({
         where: {
           id: documentId,
@@ -629,18 +645,23 @@ export class RagIngestionService {
         return;
       }
 
+      //đọc file lưu trữ -> chuyển sang dữ liệu có thể xử lý
       const fileBuffer = await this.loadImportedFileBuffer(
         document.fileUrl || '',
       );
+
       const syntheticFile = this.toSyntheticUploadFile({
         originalFileName,
         storedFileName: document.storedFileName,
         mimeType: document.mimeType,
         buffer: fileBuffer,
       });
+
+      //biến syntheticFile thành dạng có thể parse được và clean nội dung
       const parsed = await this.ragFileParserService.parse(syntheticFile);
       const cleanedText = this.ragTextCleanerService.clean(parsed.content);
 
+      //kiểm tra file text có rỗng ( trường hợp file rỗng trước và sau khi clean)
       if (!cleanedText.trim()) {
         const isPdfFile =
           document.fileType === RagFileType.PDF ||
@@ -666,6 +687,7 @@ export class RagIngestionService {
         );
       }
 
+      //giai đoạn tách file thành chunks -> update status thành CHUNKING
       await this.prisma.ragDocument.update({
         where: { id: documentId },
         data: {
@@ -676,6 +698,7 @@ export class RagIngestionService {
         },
       });
 
+      //hàm buildSegments() có nhiệm vụ chia tài liệu thành nhiều phần nhỏ.
       const chunkDrafts = this.buildSegments(
         document.title,
         cleanedText,
@@ -697,6 +720,7 @@ export class RagIngestionService {
         );
       }
 
+      //chuyển đổi trạng thái các chunk sang EMBEDDING để chuẩn bị tạo embedding vector
       await this.prisma.ragDocument.update({
         where: { id: documentId },
         data: {
@@ -704,6 +728,7 @@ export class RagIngestionService {
         },
       });
 
+      //biến các chunk thành dữ liệu hoàn chỉnh để lưu vào db
       const chunkPayloads = await this.buildChunkPayloads(
         documentId,
         chunkDrafts,
@@ -722,6 +747,7 @@ export class RagIngestionService {
         0,
       );
 
+      //Lưu chunks và đánh dấu document là READY
       await this.saveChunksAndMarkReady({
         documentId,
         chunkPayloads,
@@ -753,6 +779,9 @@ export class RagIngestionService {
     parserMetadata?: Record<string, unknown>,
     parsedSegments?: ParsedSegment[],
   ): ChunkDraft[] {
+
+    //Loại bỏ các chunk quá ngắn
+    // trừ khi toàn bộ tài liệu chỉ có đúng 1 chunk
     const normalizedSegments = (segments: ChunkDraft[]) =>
       segments.filter(
         (segment) =>
@@ -762,13 +791,15 @@ export class RagIngestionService {
 
     if (parsedSegments && parsedSegments.length > 0) {
       return normalizedSegments(
-          parsedSegments.flatMap((segment, segmentIndex) => {
-            const chunkedSegments = this.ragChunkingService.chunk({
-              content: segment.content,
-              maxChars: RAG_LIMITS.DEFAULT_CHUNK_MAX_CHARS,
-              overlapChars: RAG_LIMITS.DEFAULT_CHUNK_OVERLAP_CHARS,
-            });
+        //duyệt seq -> đem đi chia thành chunk
+        parsedSegments.flatMap((segment, segmentIndex) => {
+          const chunkedSegments = this.ragChunkingService.chunk({
+            content: segment.content,
+            maxChars: RAG_LIMITS.DEFAULT_CHUNK_MAX_CHARS,
+            overlapChars: RAG_LIMITS.DEFAULT_CHUNK_OVERLAP_CHARS,
+          });
 
+          //Duyệt từng chunk và tạo ra một object mới.
           return chunkedSegments.map((chunk) => ({
             title:
               segment.title ||
@@ -807,8 +838,10 @@ export class RagIngestionService {
     );
   }
 
+  //chặn việc upload trùng lặp file đã tồn tại trong RAG
   private async ensureNoActiveDuplicate(checksum: string) {
     const existing = await this.prisma.ragDocument.findFirst({
+      //Chỉ tìm document có checksum giống file hiện tại.
       where: {
         checksum,
         isActive: true,
@@ -850,19 +883,26 @@ export class RagIngestionService {
       accessLevel: AccessLevel;
     },
   ): Promise<ChunkPayload[]> {
+    //duyệt qua tất cả các chunk nhưng giới hạn xử lý tránh quá tải
     return mapWithConcurrency(
       chunks,
       RAG_LIMITS.EMBEDDING_BATCH_CONCURRENCY,
+
+      //Mỗi lần callback nhận chunk và index
       async (chunk, index) => {
         try {
+          //tính token xử lý
           const tokenCount = this.estimateTokenCount(chunk.content);
 
           this.logger.log(
             `documentId=${documentId} status=EMBEDDING chunkIndex=${index}`,
           );
 
+          //tạo embedding và Biến text thành vector embedding
+          //text -. gemini -> embedding vector
           const embeddingValues =
             await this.ragEmbeddingService.generateEmbedding(
+              //bổ sung ngữ cảnh
               buildChunkEmbeddingText({
                 documentTitle: context.baseTitle,
                 category: context.category,
@@ -1049,6 +1089,7 @@ export class RagIngestionService {
     };
   }
 
+  //kiểm tra file trước khi import
   async importFile(
     file: Express.Multer.File,
     dto: ImportRagFileDto,
@@ -1083,7 +1124,11 @@ export class RagIngestionService {
     // Gán lại để upload/parser/log phía sau đều dùng tên file đã sửa mojibake.
     file.originalname = originalFileName;
 
-    const checksum = createHash('sha256').update(file.buffer).digest('hex');
+    const checksum = createHash('sha256')
+      .update(file.buffer)
+      .digest('hex'); //trả kết quả dưới dạng chuỗi ký tự hexadecimal
+
+    //kiểm tra kiểu file
     const fileType = this.ragFileParserService.inferFileType(file);
 
     await this.ensureNoActiveDuplicate(checksum);

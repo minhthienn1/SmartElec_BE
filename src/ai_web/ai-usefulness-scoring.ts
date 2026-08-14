@@ -3,6 +3,16 @@ import { UsefulnessLabel } from '@prisma/client';
 type AiConversationState = Record<string, any>;
 type AiFeedback = 'LIKE' | 'DISLIKE' | null | undefined;
 
+// bắt đầu score = 5
+//+ 2 nếu AI xác định thêm thiết bị
+//+ 2 nếu AI xác định thêm triệu chứng
+//+ 1 nếu xác định thêm risk
+//+ 1 nếu thu thêm context
+//+ 2 nếu phase hội thoại tiến triển
+//- 2 nếu state gần như không đổi
+//- 2 nếu AI hỏi lại thông tin đã biết
+//- 3 nếu bỏ sót cảnh báo nguy hiểm
+
 export type AiUsefulnessEvaluation = {
   autoUsefulnessScore: number;
   autoUsefulnessLabel: UsefulnessLabel;
