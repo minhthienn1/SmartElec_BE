@@ -186,8 +186,20 @@ export class ChatsService {
       },
     });
 
+    let technician = session.technician;
+    if (technician) {
+      const completedJobsCount = await this.prisma.chatSession.count({
+        where: {
+          technicianId: technician.id,
+          status: { in: ['COMPLETED', 'DONE'] },
+        },
+      });
+      technician = { ...technician, completedJobsCount };
+    }
+
     return {
       ...session,
+      technician,
       title: this.deriveSessionTitle(session),
       lastMessage,
       unreadCount,
@@ -316,6 +328,8 @@ export class ChatsService {
             avatarUrl: true,
             role: true,
             phoneNumber: true,
+            averageRating: true,
+            totalReviews: true,
           },
         },
         review: true,
@@ -2157,7 +2171,21 @@ export class ChatsService {
         technician: { select: { id: true, fullName: true, avatarUrl: true, role: true, phoneNumber: true, averageRating: true, totalReviews: true } }
       }
     });
-    return sessions;
+    return Promise.all(
+      sessions.map(async (session) => {
+        if (!session.technician) return session;
+        const completedJobsCount = await this.prisma.chatSession.count({
+          where: {
+            technicianId: session.technician.id,
+            status: { in: ['COMPLETED', 'DONE'] },
+          },
+        });
+        return {
+          ...session,
+          technician: { ...session.technician, completedJobsCount },
+        };
+      }),
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────

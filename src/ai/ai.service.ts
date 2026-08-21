@@ -39,14 +39,26 @@ QUY TẮC DỮ LIỆU & BẢO MẬT NGUỒN GỐC
 ══════════════════════════════════════════
 QUY TẮC ĐỘ DÀI & ĐIỀU CHỈNH THEO CẢM XÚC (DYNAMIC UX)
 ══════════════════════════════════════════
-1. TRẠNG THÁI NGUY HIỂM (🔴 MỨC ĐỎ) HOẶC KHÁCH HOẢNG LOẠN:
+1. TRẠNG THÁI NGUY HIỂM ( MỨC ĐỎ) HOẶC KHÁCH HOẢNG LOẠN:
    - TUYỆT ĐỐI trả lời NGẮN GỌN (Dưới 40 chữ). Tối đa 2-3 câu mệnh lệnh dứt khoát.
    - Ví dụ: "DỪNG LẠI NGAY! Bạn tuyệt đối không dùng kìm cạy bếp. Khói bốc ra rất nguy hiểm, bạn dập cầu dao ngay lập tức và lùi ra xa nhé!"
 
-2. TRẠNG THÁI BÌNH THƯỜNG (🟡 MỨC VÀNG, 🟢 MỨC XANH):
+2. TRẠNG THÁI BÌNH THƯỜNG (MỨC VÀNG, MỨC XANH):
    - Có thể trả lời chi tiết hơn (Tối đa 150 chữ), thể hiện sự thấu cảm.
 
 ══════════════════════════════════════════
+══════════════════════════════════════════
+NHẬN DIỆN CẢM XÚC KHÁCH HÀNG (SƠ BỘ)
+══════════════════════════════════════════
+Dựa trên văn phong tin nhắn khách (viết HOA, nhiều dấu !!!, các từ như "gấp", "sợ quá",
+"quá đáng", "chờ hoài", "bực mình"...), hãy gán trường "emotion" TÁCH BIỆT với "risk":
+PANIC: hoảng loạn, sợ hãi rõ rệt.
+ANGRY: bực bội, khó chịu, phàn nàn.
+ANXIOUS: lo lắng nhẹ, băn khoăn.
+NORMAL: bình thường.
+Đây là nhận diện SƠ BỘ dựa trên suy luận ngôn ngữ, chỉ dùng để bạn chọn thêm 1 câu mở đầu
+đồng cảm phù hợp — KHÔNG được dùng field này để tự ý đổi mức "risk".
+
 QUY TẮC TRÌNH BÀY VĂN BẢN (MARKDOWN) - BẮT BUỘC
 ══════════════════════════════════════════
 Để tối ưu trải nghiệm đọc (UX) trên thiết bị di động, bạn BẮT BUỘC phải nhấn mạnh thông tin bằng cú pháp bôi đậm (**text**) cho 5 nhóm thông tin sau:
@@ -149,6 +161,11 @@ const responseSchema: any = {
           items: { type: SchemaType.STRING },
           description: 'Các tag nguy hiểm phát hiện được',
         },
+        emotion: {
+          type: SchemaType.STRING,
+          enum: ['PANIC', 'ANGRY', 'ANXIOUS', 'NORMAL', 'UNKNOWN'],
+          description: 'Trạng thái cảm xúc SƠ BỘ của khách, suy luận qua ngôn từ/dấu câu trong tin nhắn (zero-shot qua prompt, chưa phải mô hình sentiment chuyên biệt).',
+        },
       },
       required: ['phase', 'risk'],
     },
@@ -171,6 +188,7 @@ const SAFE_FALLBACK_STATE = {
   model: null,
   symptom: null,
   flags: [],
+  emotion: 'UNKNOWN',
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -570,7 +588,7 @@ ${negativeText || '   (Chưa có)'}
         parts.push({ inlineData: { mimeType: 'image/jpeg', data: imageBase64 } });
       }
 
-      // ✅ LỌC LỊCH SỬ GEMINI
+      // LỌC LỊCH SỬ GEMINI
       const cleanHistory: { role: string; parts: { text: string }[] }[] = [];
       let expectedRole = 'user';
       for (const h of history.slice(-10)) {
@@ -604,9 +622,7 @@ ${negativeText || '   (Chưa có)'}
 
       // Lớp 2: Bộ lọc Regex hậu xử lý (Hard filter) để xóa dấu vết tài liệu nếu AI lỡ miệng
       if (parsed?.text) {
-        // Gom chung các từ khóa: tham khảo, tài liệu, trích xuất, nguồn... có hoặc không có dấu ngoặc
         let cleanText = parsed.text.replace(/\(?(tài liệu tham khảo|tham khảo từ|tham khảo:|theo tài liệu|trích xuất từ|nguồn:).*?\)?/gi, '');
-        // Xóa nốt những câu lẻ loi bắt đầu bằng từ khóa nếu nó đứng ở cuối câu
         cleanText = cleanText.replace(/(tài liệu tham khảo|tham khảo từ|theo tài liệu|trích xuất từ).*$/gi, '');
         parsed.text = cleanText.trim();
       }
@@ -621,7 +637,7 @@ ${negativeText || '   (Chưa có)'}
         parsed.is_booking_triggered = true;
       }
 
-      // ── 6. XỬ LÝ BOOKING ───────────────────
+      // 6. XỬ LÝ BOOKING
       if (parsed.state?.risk === 'RED' || parsed.is_booking_triggered) {
 
         // Nếu dính mức ĐỎ, ta chủ động ép cờ booking thành true để Flutter hiện nút luôn
@@ -630,7 +646,7 @@ ${negativeText || '   (Chưa có)'}
 
           // Thêm một câu hướng dẫn khách bấm nút khẩn cấp nếu AI chưa kịp nói
           if (!parsed.text.includes('[ĐẶT THỢ]') && !parsed.text.includes('Đặt thợ ngay')) {
-            parsed.text += `\n\n🚨 **TÌNH HUỐNG KHẨN CẤP:** Để hỗ trợ bạn xử lý sự cố nguy hiểm này nhanh nhất, mình đã mở cổng điều phối. Bạn vui lòng nhấn vào nút **[Đặt thợ ngay]** màu xanh lá bên dưới để kỹ thuật viên chạy qua hỗ trợ bạn lập tức nhé!`;
+            parsed.text += `\n\n🚨 TÌNH HUỐNG KHẨN CẤP: Để hỗ trợ bạn xử lý sự cố nguy hiểm này nhanh nhất, mình đã mở cổng điều phối. Bạn vui lòng nhấn vào nút [Đặt thợ ngay] màu xanh lá bên dưới để kỹ thuật viên chạy qua hỗ trợ bạn lập tức nhé!`;
           }
         }
 
@@ -695,10 +711,21 @@ Yêu cầu: Viết 1-2 câu tóm tắt (Ví dụ: Máy lạnh bị chảy nướ
         };
       }
 
-      // ── 7. ĐỒNG BỘ DANGER KEYWORDS ──────────────────────────────────
+      // 7. ĐỒNG BỘ DANGER KEYWORDS 
       if (parsed.state?.risk === 'RED') {
         if (!parsed.text.includes('cầu dao') && !parsed.text.includes('nguy hiểm')) {
           parsed.text = `⚠️ **LƯU Ý AN TOÀN:** Có dấu hiệu nguy hiểm nghiêm trọng, bạn nên kiểm tra kỹ nguồn điện hoặc ngắt cầu dao để đảm bảo an toàn trước nhé!\n\n${parsed.text}`;
+        }
+      }
+
+      // 7B. ĐIỀU CHỈNH GIỌNG ĐIỆU THEO CẢM XÚC (bước đầu — chưa đầy đủ) ──
+      // Ghi chú: chỉ đổi văn phong câu mở đầu, KHÔNG dùng để tái xếp hạng
+      const emotion = parsed.state?.emotion;
+      if (parsed.state?.risk !== 'RED' && parsed.text) {
+        if (emotion === 'PANIC') {
+          parsed.text = `Mình hiểu bạn đang khá lo lắng, mình sẽ hỗ trợ ngay đây nhé. ${parsed.text}`;
+        } else if (emotion === 'ANGRY') {
+          parsed.text = `Mình hiểu sự bất tiện này, mình sẽ giúp bạn xử lý nhanh nhất có thể. ${parsed.text}`;
         }
       }
 
