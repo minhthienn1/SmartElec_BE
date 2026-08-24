@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { MessageType, RagDocumentKind } from '@prisma/client';
 import { ArchiveRagDocumentDto } from '../../rag/dto/archive-rag-document.dto';
 import { IngestDocumentDto } from '../../rag/dto/ingest-document.dto';
@@ -47,6 +52,8 @@ type ConversationAiLog = {
 
 @Injectable()
 export class AdminRagKnowledgeService {
+  private readonly logger = new Logger(AdminRagKnowledgeService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly ragService: RagService,
@@ -178,6 +185,10 @@ export class AdminRagKnowledgeService {
 
   //thời điểm admin bấm nút convert Session sang RAG
   async importConversationCandidate(dto: ImportRagConversationDto) {
+    this.logger.log(
+      `Admin đã chọn import phiên chat sang RAG sessionId=${dto.sessionId}, nguồn=${dto.sourceType}`,
+    );
+
     const existingDocument = await this.prisma.ragDocument.findFirst({
       where: { source: `CHAT_SESSION:${dto.sessionId}` },
       select: { id: true },
@@ -212,7 +223,24 @@ export class AdminRagKnowledgeService {
     });
 
     //tạo tài liệu mới vào bên trong RAG
-    return this.ragService.ingestDocument({
+    const rawMessages = this.getConversationMessages(session);
+    const cleanedMessageCount = rawMessages.filter((message) =>
+      this.cleanConversationMessageContent(message.content),
+    ).length;
+    const normalizedDevice =
+      this.normalizeRagField(session.deviceType) !== 'Chưa xác định'
+        ? this.normalizeRagField(session.deviceType)
+        : this.normalizeRagField(session.aiLogs[0]?.deviceCategory);
+    const normalizedBrandModel = this.buildBrandModelLabel(
+      session.brand,
+      session.modelCode,
+    );
+
+    this.logger.log(
+      `RAG đã lọc và chuẩn hóa phiên chat sessionId=${session.id}, thiết bị="${normalizedDevice}", hãng/model="${normalizedBrandModel}", tin nhắn gốc=${rawMessages.length}, tin nhắn giữ lại=${cleanedMessageCount}, quyền truy cập=BASIC`,
+    );
+
+    const result = await this.ragService.ingestDocument({
       title: `Cuộc trò chuyện SE-${session.id} - ${session.deviceType || 'Thiết bị'}`,
       description:
         dto.sourceType === RagConversationImportSource.CUSTOMER_REVIEW
@@ -230,8 +258,15 @@ export class AdminRagKnowledgeService {
         evaluation.aiScore ? `ai-score-${evaluation.aiScore}` : '',
       ].filter(Boolean),
       kind: RagDocumentKind.INTERNAL_NOTE,
-      accessLevel: 'ADVANCED',
+      accessLevel: 'BASIC',
     });
+
+    const importedDocument = result.document as { id?: number } | undefined;
+    this.logger.log(
+      `Import phiên chat sang RAG thành công sessionId=${session.id}, documentId=${importedDocument?.id ?? 'không xác định'}, trạng thái=READY, quyền truy cập=BASIC`,
+    );
+
+    return result;
   }
 
   private async getReviewConversationCandidates() {
@@ -267,8 +302,8 @@ export class AdminRagKnowledgeService {
   private async getAiConversationCandidates() {
     const logs = await this.prisma.aiReasoningLog.findMany({
       where: {
-        sessionId: { not: null },
-        score: { gte: 6 },
+        sessionId: { not: null }, //log phải là 1 chat session thật
+        score: { gte: 6 }, //>=6 điểm mới được coi là chất lượng tốt
       },
       orderBy: [{ score: 'desc' }, { createdAt: 'desc' }],
       select: {
@@ -283,7 +318,7 @@ export class AdminRagKnowledgeService {
     });
 
     const reviewedSessions = await this.prisma.review.findMany({
-      where: {
+      where: { //Chỉ cần session đã có bất kỳ Review nào thì nó không còn đi nhánh AI candidate
         sessionId: {
           in: logs
             .map((log) => log.sessionId)
@@ -292,9 +327,12 @@ export class AdminRagKnowledgeService {
       },
       select: { sessionId: true },
     });
+
     const reviewedSessionIds = new Set(
       reviewedSessions.map((review) => review.sessionId),
     );
+
+    //map lấy phần tử đầu tiên session có score cao nhất trong logs
     const bestLogBySessionId = new Map<number, (typeof logs)[number]>();
 
     for (const log of logs) {
@@ -304,11 +342,13 @@ export class AdminRagKnowledgeService {
       }
     }
 
+    //lấy các sessionId từ map và bỏ vào mảng để query ra các session tương ứng
     const sessionIds = Array.from(bestLogBySessionId.keys());
     if (sessionIds.length === 0) {
       return [];
     }
 
+    //lấy toàn bộ cuộc trò chuyện
     const sessions = await this.prisma.chatSession.findMany({
       where: { id: { in: sessionIds } },
       orderBy: { updatedAt: 'desc' },
@@ -504,6 +544,7 @@ export class AdminRagKnowledgeService {
     };
   }
 
+  //tổng hợp messge hiện lên cho user biết
   private getConversationMessages(
     session: Awaited<ReturnType<typeof this.getConversationForImport>>,
   ): ConversationMessage[] {
@@ -511,6 +552,7 @@ export class AdminRagKnowledgeService {
       return session.messages;
     }
 
+    //Mỗi AiReasoningLog có thể sinh 2 message: 1 user, 2 Ai
     return session.aiLogs.flatMap((log) => {
       const messages: ConversationMessage[] = [];
 
@@ -555,6 +597,234 @@ export class AdminRagKnowledgeService {
   }
 
   //hàm đóng gói 1 cuộc trò chuyện thành nội dung RAG hoàn chỉnh
+  private cleanConversationMessageContent(content: string) {
+    const normalized = this.redactPersonalData(content)
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/\u0000/g, '')
+      .split('\n')
+      .map((line) => line.replace(/\s+/g, ' ').trim())
+      .filter((line) => this.shouldKeepConversationLine(line));
+
+    return this.removeRepeatedConversationLines(normalized)
+      .filter((line) => this.shouldKeepConversationLine(line))
+      .join('\n')
+      .trim();
+  }
+
+  private redactPersonalData(text: string) {
+    return text
+      .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email đã ẩn]')
+      .replace(
+        /(?<!\d)(?:\+?84|0)(?:[\s.-]?\d){8,10}(?!\d)/g,
+        '[số điện thoại đã ẩn]',
+      )
+      .replace(
+        /\b\d{1,4}(?:[\/.-]\d{1,4})?(?:\s*,\s*[^,\n]{2,40}){1,4}/g,
+        '[địa chỉ đã ẩn]',
+      )
+      .replace(
+        /\b(?:địa chỉ|dia chi|trường|truong|hẻm|hem|đường|duong|phường|phuong|quận|quan|huyện|huyen|thành phố|tp\.?)\b[^.\n]*/gi,
+        '[địa chỉ đã ẩn]',
+      );
+  }
+
+  private shouldKeepConversationLine(line: string) {
+    const normalized = line.trim();
+
+    if (!normalized) {
+      return false;
+    }
+
+    if (/^[A-Z]{1,4}\d{1,4}([-_/][A-Z0-9]{1,6})?$/i.test(normalized)) {
+      return true;
+    }
+
+    const lower = normalized.toLocaleLowerCase('vi-VN');
+    const noiseLines = new Set([
+      'alo',
+      'hello',
+      'hi',
+      'ok',
+      'oki',
+      'okay',
+      'vâng',
+      'dạ',
+      'ừ',
+      'ừm',
+      'uh',
+      'um',
+      'cảm ơn',
+      'cam on',
+      'thanks',
+      'thank you',
+      'test',
+      '[địa chỉ đã ẩn]',
+    ]);
+
+    if (noiseLines.has(lower)) {
+      return false;
+    }
+
+    if (/\[địa chỉ đã ẩn\]/i.test(normalized)) {
+      return false;
+    }
+
+    if (/^báo giá mới cho\b/i.test(lower)) {
+      return false;
+    }
+
+    if (
+      /\b(?:địa chỉ|dia chi|vị trí|vi tri)\b/i.test(lower) &&
+      /\b(?:cần biết|gửi|gửi lại|cho tôi|báo|chính xác|ở đâu)\b/i.test(lower)
+    ) {
+      return false;
+    }
+
+    if (
+      /^(?:xin chào|chào|chào bạn|bạn cần|bạn có|đúng vậy|tôi đã đến|tôi bắt đầu đi|chờ tôi|ok\b|okay\b)/i.test(
+        lower,
+      )
+    ) {
+      return false;
+    }
+
+    if (
+      /\b(?:qua|tới|đến|đi tới|tôi qua|tôi ra|trước hẻm|15p|15 phút)\b/i.test(
+        lower,
+      ) &&
+      !this.hasTechnicalConversationSignal(lower)
+    ) {
+      return false;
+    }
+
+    if (
+      this.hasOperationalConversationSignal(lower) &&
+      !this.hasTechnicalConversationSignal(lower)
+    ) {
+      return false;
+    }
+
+    const meaningfulChars = normalized.replace(/[^\p{L}\p{N}]/gu, '');
+    if (meaningfulChars.length < 3) {
+      return false;
+    }
+
+    return true;
+  }
+
+  private hasTechnicalConversationSignal(line: string) {
+    return /\b(?:lỗi|loi|triệu chứng|trieu chung|nguyên nhân|nguyen nhan|kiểm tra|kiem tra|vệ sinh|ve sinh|sửa|sua|thay|ngắt nguồn|ngat nguon|cháy|chay|nổ|no|nguy cơ|nguy co|không mát|khong mat|không lạnh|khong lanh|gió yếu|gio yeu|gió nhẹ|gio nhe|rò điện|ro dien|mất nguồn|mat nguon|chập|chap|nóng|nong|lưới lọc|luoi loc|remote|cảm biến|cam bien|block|máy nén|may nen|gas|ống|ong|van|cầu dao|cau dao|aptomat|bo mạch|bo mach)\b/i.test(
+      line,
+    );
+  }
+
+  private hasOperationalConversationSignal(line: string) {
+    return /\b(?:địa chỉ|dia chi|định vị|dinh vi|vị trí|vi tri|hẻm|hem|cổng|cong|nhà|nha|trường|truong|đường|duong|phường|phuong|quận|quan|huyện|huyen|tới nơi|toi noi|đến nơi|den noi|đã tới|da toi|đã đến|da den|đang trên đường|dang tren duong|trên đường|tren duong|chờ|đợi|doi|phút|phut|giờ|gio|15p|30p|nhận đơn|nhan don|bắt đầu đi|bat dau di|bắt đầu sửa|bat dau sua|hoàn thành|hoan thanh|hủy đơn|huy don|đổi thợ|doi tho|báo giá|bao gia|thanh toán|thanh toan|hóa đơn|hoa don|chấp nhận báo giá|chap nhan bao gia|đã gửi ảnh|da gui anh|gửi ảnh|gui anh|tải lên hình|tai len hinh|file đính kèm|file dinh kem|image uploaded|ảnh|anh|video)\b/i.test(
+      line,
+    );
+  }
+
+  private removeRepeatedConversationLines(lines: string[]) {
+    const result: string[] = [];
+    const seenKeys = new Set<string>();
+
+    for (const line of lines) {
+      const key = line
+        .toLocaleLowerCase('vi-VN')
+        .replace(/\s+/g, ' ')
+        .replace(/[.,;:!?]+$/g, '')
+        .trim();
+
+      if (seenKeys.has(key)) {
+        continue;
+      }
+
+      result.push(line);
+      seenKeys.add(key);
+    }
+
+    return result;
+  }
+
+  private normalizeRagField(value?: string | null) {
+    const normalized = value?.trim();
+
+    if (!normalized || /^unknown$/i.test(normalized)) {
+      return 'Chưa xác định';
+    }
+
+    return normalized;
+  }
+
+  private buildBrandModelLabel(brand?: string | null, modelCode?: string | null) {
+    const normalizedBrand = this.normalizeRagField(brand);
+    const normalizedModel = this.normalizeRagField(modelCode);
+
+    if (
+      normalizedBrand === 'Chưa xác định' &&
+      normalizedModel === 'Chưa xác định'
+    ) {
+      return 'Chưa xác định';
+    }
+
+    return `${normalizedBrand} / ${normalizedModel}`;
+  }
+
+  private extractTechnicalKeywords(text: string) {
+    const keywords = new Set<string>();
+    const matches =
+      text.match(/\b[A-Z]{1,4}\d{1,4}(?:[-_/][A-Z0-9]{1,6})?\b/gi) ?? [];
+
+    for (const match of matches) {
+      keywords.add(match.toUpperCase());
+    }
+
+    return Array.from(keywords).slice(0, 12);
+  }
+
+  private buildTechnicalSummary(params: {
+    session: Awaited<ReturnType<typeof this.getConversationForImport>>;
+    evaluation: NonNullable<
+      Awaited<ReturnType<typeof this.resolveConversationEvaluation>>
+    >;
+    note?: string;
+    transcript: string;
+  }) {
+    const { session, evaluation, note, transcript } = params;
+    const device =
+      this.normalizeRagField(session.deviceType) !== 'Chưa xác định'
+        ? this.normalizeRagField(session.deviceType)
+        : this.normalizeRagField(session.aiLogs[0]?.deviceCategory);
+    const brandModel = this.buildBrandModelLabel(
+      session.brand,
+      session.modelCode,
+    );
+    const symptom = this.cleanConversationMessageContent(session.symptom || '');
+    const aiSummary = this.cleanConversationMessageContent(
+      session.aiSummary || '',
+    );
+    const evaluationNote = this.cleanConversationMessageContent(
+      evaluation.note || '',
+    );
+    const adminNote = this.cleanConversationMessageContent(note || '');
+    const technicalKeywords = this.extractTechnicalKeywords(
+      [symptom, aiSummary, evaluationNote, adminNote, transcript]
+        .filter(Boolean)
+        .join('\n'),
+    );
+
+    return [
+      'Tóm tắt kỹ thuật:',
+      `- Thiết bị: ${device}`,
+      `- Hãng/model: ${brandModel}`,
+      `- Mã lỗi/từ khóa kỹ thuật: ${technicalKeywords.join(', ') || 'Chưa xác định'}`,
+      `- Triệu chứng: ${symptom || 'Chưa xác định'}`,
+      `- Kết luận AI: ${aiSummary || evaluationNote || 'Chưa có kết luận'}`,
+      adminNote ? `- Ghi chú admin: ${adminNote}` : null,
+    ].filter((line): line is string => line !== null);
+  }
+
   private buildConversationRagContent(params: {
     session: Awaited<ReturnType<typeof this.getConversationForImport>>;
     evaluation: NonNullable<
@@ -564,17 +834,37 @@ export class AdminRagKnowledgeService {
   }) {
     const { session, evaluation, note } = params;
     const messages = this.getConversationMessages(session);
-    const transcript = messages
-      .map((message, index) => {
+    const cleanedMessages = messages
+      .map((message) => {
+        const content = this.cleanConversationMessageContent(message.content);
+        if (!content) {
+          return null;
+        }
+
         const speaker = message.sender
           ? message.sender.role === 'TECHNICIAN'
             ? 'Kỹ thuật viên'
             : 'Khách hàng'
           : 'AI tư vấn';
 
-        return `${index + 1}. ${speaker}: ${message.content}`;
+        return {
+          speaker,
+          content,
+        };
       })
+      .filter(
+        (message): message is { speaker: string; content: string } =>
+          message !== null,
+      );
+    const transcript = cleanedMessages
+      .map((message, index) => `${index + 1}. ${message.speaker}: ${message.content}`)
       .join('\n');
+    const technicalSummary = this.buildTechnicalSummary({
+      session,
+      evaluation,
+      note,
+      transcript,
+    });
 
     return [
       `Mã phiên: SE-${session.id}`,
@@ -584,14 +874,22 @@ export class AdminRagKnowledgeService {
         ? 'Có - cuộc trò chuyện được AI kết luận'
         : 'Không - cuộc trò chuyện được khách hàng đánh giá'
       }`,
-      `Thiết bị: ${session.deviceType || 'Chưa xác định'}`,
-      `Hãng/model: ${[session.brand, session.modelCode].filter(Boolean).join(' / ') || 'Chưa xác định'}`,
-      `Vấn đề khách mô tả: ${session.symptom || 'Chưa có mô tả'}`,
-      `Tóm tắt AI: ${session.aiSummary || 'Chưa có tóm tắt'}`,
-      evaluation.note ? `Ghi chú đánh giá: ${evaluation.note}` : null,
-      note?.trim() ? `Ghi chú admin: ${note.trim()}` : null,
       '',
-      'Nội dung hội thoại:',
+      ...technicalSummary,
+      '',
+      'Thông tin gốc:',
+      `Thiết bị: ${this.normalizeRagField(session.deviceType)}`,
+      `Hãng/model: ${this.buildBrandModelLabel(session.brand, session.modelCode)}`,
+      `Vấn đề khách mô tả: ${this.cleanConversationMessageContent(session.symptom || '') || 'Chưa có mô tả'}`,
+      `Tóm tắt AI: ${this.cleanConversationMessageContent(session.aiSummary || '') || 'Chưa có tóm tắt'}`,
+      this.cleanConversationMessageContent(evaluation.note || '')
+        ? `Ghi chú đánh giá: ${this.cleanConversationMessageContent(evaluation.note || '')}`
+        : null,
+      this.cleanConversationMessageContent(note || '')
+        ? `Ghi chú admin: ${this.cleanConversationMessageContent(note || '')}`
+        : null,
+      '',
+      'Nội dung hội thoại đã làm sạch:',
       transcript || 'Chưa có nội dung hội thoại.',
     ]
       .filter((line): line is string => line !== null)

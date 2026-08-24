@@ -84,11 +84,21 @@ export class AdminAiReasoningLogsService {
     }
 
     if (query.scoreLevel === 'LOW_SCORE') {
-      and.push({ score: { lte: 4 } });
+      and.push({
+        OR: [
+          { autoUsefulnessScore: { lte: 4 } },
+          { autoUsefulnessScore: null, score: { lte: 4 } },
+        ],
+      });
     }
 
     if (query.scoreLevel === 'HIGH_SCORE') {
-      and.push({ score: { gte: 8 } });
+      and.push({
+        OR: [
+          { autoUsefulnessScore: { gte: 8 } },
+          { autoUsefulnessScore: null, score: { gte: 8 } },
+        ],
+      });
     }
 
     if (query.golden === 'YES') {
@@ -417,6 +427,7 @@ export class AdminAiReasoningLogsService {
       data: {
         humanUsefulnessLabel: payload.humanUsefulnessLabel,
         humanUsefulnessNote: payload.humanUsefulnessNote?.trim() || null,
+        isGolden: payload.humanUsefulnessLabel === 'USEFUL',
         reviewedById: reviewerId,
         reviewedAt: new Date(),
       },

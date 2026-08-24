@@ -65,3 +65,31 @@ export const ALLOWED_RAG_IMPORT_MIME_TYPES = new Set([
 
 export const RAG_IMPORT_UNSUPPORTED_FILE_MESSAGE =
   'Chỉ hỗ trợ file TXT, MD, CSV, DOCX, XLSX hoặc PDF có lớp text.';
+
+export const RAG_HEADING_PATTERNS: readonly RegExp[] = [
+  /^chương\s+[ivxlcdm\d]+/i,
+  /^chuong\s+[ivxlcdm\d]+/i,
+
+  /^bài\s+\d+/i,
+  /^bai\s+\d+/i,
+
+  /^mục\s+\d+/i,
+  /^muc\s+\d+/i,
+
+  /^phần\s+\d+/i,
+  /^phan\s+\d+/i,
+
+  /^\d+(\.\d+){1,5}\.?\s+.+/,
+  /^[IVXLCDM]+\.\s+.+/i,
+
+  /^[A-ZĐ][A-ZÀ-Ỹ0-9\s,()/.-]{10,}$/,
+];
+
+export const RAG_CHUNKING_HEURISTICS = {
+  MIN_DUPLICATE_PASSAGE_CHARS: 100,
+
+  MIN_HEADING_CHARS: 3,
+  MAX_HEADING_CHARS: 140,
+
+  MIN_WHITESPACE_BREAK_RATIO: 0.65,
+} as const;

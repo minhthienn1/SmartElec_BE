@@ -620,10 +620,13 @@ export class RagIngestionService {
     //fall back: originalFileName -> storedFileName -> title
     const originalFileName =
       document.originalFileName || document.storedFileName || document.title;
+    const importStartedAt = Date.now();
 
     try {
+      let stageStartedAt = importStartedAt;
+
       this.logger.log(
-        `documentId=${documentId} status=PARSING originalFileName=${originalFileName}`,
+        `RAG bắt đầu phân tích tài liệu documentId=${documentId}, tên file gốc=${originalFileName}`,
       );
 
       //Nếu document vẫn đang UPLOADED -> đổi sang PARSING
@@ -644,6 +647,9 @@ export class RagIngestionService {
         );
         return;
       }
+      this.logger.log(
+        `RAG chuyển trạng thái documentId=${documentId} từ UPLOADED sang PARSING`,
+      );
 
       //đọc file lưu trữ -> chuyển sang dữ liệu có thể xử lý
       const fileBuffer = await this.loadImportedFileBuffer(
@@ -686,6 +692,10 @@ export class RagIngestionService {
           'Tài liệu quá lớn sau khi parse, vui lòng chia nhỏ file theo chương hoặc chủ đề.',
         );
       }
+      this.logger.log(
+        `RAG hoàn tất giai đoạn PARSING documentId=${documentId}, thời gian=${Date.now() - stageStartedAt}ms`,
+      );
+      stageStartedAt = Date.now();
 
       //giai đoạn tách file thành chunks -> update status thành CHUNKING
       await this.prisma.ragDocument.update({
@@ -697,6 +707,9 @@ export class RagIngestionService {
           errorMessage: null,
         },
       });
+      this.logger.log(
+        `RAG chuyển trạng thái documentId=${documentId} từ PARSING sang CHUNKING`,
+      );
 
       //hàm buildSegments() có nhiệm vụ chia tài liệu thành nhiều phần nhỏ.
       const chunkDrafts = this.buildSegments(
@@ -707,7 +720,7 @@ export class RagIngestionService {
       );
 
       this.logger.log(
-        `documentId=${documentId} status=CHUNKING chunks=${chunkDrafts.length}`,
+        `RAG đã chia tài liệu documentId=${documentId} thành ${chunkDrafts.length} chunk`,
       );
 
       if (chunkDrafts.length === 0) {
@@ -719,6 +732,10 @@ export class RagIngestionService {
           'Tài liệu tạo ra quá nhiều chunk, vui lòng chia nhỏ file.',
         );
       }
+      this.logger.log(
+        `RAG hoàn tất giai đoạn CHUNKING documentId=${documentId}, thời gian=${Date.now() - stageStartedAt}ms`,
+      );
+      stageStartedAt = Date.now();
 
       //chuyển đổi trạng thái các chunk sang EMBEDDING để chuẩn bị tạo embedding vector
       await this.prisma.ragDocument.update({
@@ -727,6 +744,9 @@ export class RagIngestionService {
           status: RagDocumentStatus.EMBEDDING,
         },
       });
+      this.logger.log(
+        `RAG chuyển trạng thái documentId=${documentId} từ CHUNKING sang EMBEDDING`,
+      );
 
       //biến các chunk thành dữ liệu hoàn chỉnh để lưu vào db
       const chunkPayloads = await this.buildChunkPayloads(
@@ -761,13 +781,21 @@ export class RagIngestionService {
         originalFileName,
       });
 
-      this.logger.log(`documentId=${documentId} status=READY`);
+      this.logger.log(
+        `RAG chuyển trạng thái documentId=${documentId} từ EMBEDDING sang READY`,
+      );
+      this.logger.log(
+        `RAG hoàn tất giai đoạn EMBEDDING documentId=${documentId}, thời gian=${Date.now() - stageStartedAt}ms`,
+      );
+      this.logger.log(
+        `RAG hoàn tất import documentId=${documentId}, tổng thời gian=${Date.now() - importStartedAt}ms`,
+      );
     } catch (error) {
       await this.cleanupFailedImport(documentId, error);
 
       const reason = error instanceof Error ? error.message : 'Không xác định';
       this.logger.error(
-        `documentId=${documentId} status=FAILED reason=${reason}`,
+        `RAG chuyển trạng thái documentId=${documentId} sang FAILED, tổng thời gian=${Date.now() - importStartedAt}ms, lý do=${reason}`,
         error,
       );
     }
@@ -780,23 +808,31 @@ export class RagIngestionService {
     parsedSegments?: ParsedSegment[],
   ): ChunkDraft[] {
 
-    //Loại bỏ các chunk quá ngắn
-    // trừ khi toàn bộ tài liệu chỉ có đúng 1 chunk
+    // Giữ cả fragment ngắn sau dedupe để không làm mất unique knowledge.
     const normalizedSegments = (segments: ChunkDraft[]) =>
-      segments.filter(
-        (segment) =>
-          segment.charCount >= RAG_LIMITS.MIN_CHUNK_CHARS ||
-          segments.length === 1,
-      );
+      segments.filter((segment) => segment.content.trim().length > 0);
+
+    const dedupeContext = this.ragChunkingService.createDocumentDedupeContext();
 
     if (parsedSegments && parsedSegments.length > 0) {
       return normalizedSegments(
         //duyệt seq -> đem đi chia thành chunk
         parsedSegments.flatMap((segment, segmentIndex) => {
+          const dedupedSegment = this.ragChunkingService.dedupeSourceText(
+            segment.content,
+            dedupeContext,
+          );
+
+          this.logger.log(
+            `RAG lọc trùng đoạn segmentIndex=${segmentIndex}, độ dài ban đầu=${dedupedSegment.rawLength}, độ dài sau lọc=${dedupedSegment.dedupedLength}, số vùng trùng đã bỏ=${dedupedSegment.removedDuplicateRanges}`,
+          );
+
           const chunkedSegments = this.ragChunkingService.chunk({
-            content: segment.content,
+            content: dedupedSegment.content,
             maxChars: RAG_LIMITS.DEFAULT_CHUNK_MAX_CHARS,
             overlapChars: RAG_LIMITS.DEFAULT_CHUNK_OVERLAP_CHARS,
+            dedupeContext,
+            skipSourceDedupe: true,
           });
 
           //Duyệt từng chunk và tạo ra một object mới.
@@ -817,10 +853,21 @@ export class RagIngestionService {
       );
     }
 
-    const chunkedSegments = this.ragChunkingService.chunk({
+    const dedupedContent = this.ragChunkingService.dedupeSourceText(
       content,
+      dedupeContext,
+    );
+
+    this.logger.log(
+      `RAG lọc trùng tài liệu, độ dài ban đầu=${dedupedContent.rawLength}, độ dài sau lọc=${dedupedContent.dedupedLength}, số vùng trùng đã bỏ=${dedupedContent.removedDuplicateRanges}`,
+    );
+
+    const chunkedSegments = this.ragChunkingService.chunk({
+      content: dedupedContent.content,
       maxChars: RAG_LIMITS.DEFAULT_CHUNK_MAX_CHARS,
       overlapChars: RAG_LIMITS.DEFAULT_CHUNK_OVERLAP_CHARS,
+      dedupeContext,
+      skipSourceDedupe: true,
     });
 
     return normalizedSegments(
@@ -839,34 +886,28 @@ export class RagIngestionService {
   }
 
   //chặn việc upload trùng lặp file đã tồn tại trong RAG
-  private async ensureNoActiveDuplicate(checksum: string) {
+  private async ensureNoExistingDuplicate(checksum: string) {
     const existing = await this.prisma.ragDocument.findFirst({
-      //Chỉ tìm document có checksum giống file hiện tại.
       where: {
         checksum,
-        isActive: true,
         status: {
-          in: [
-            RagDocumentStatus.UPLOADED,
-            RagDocumentStatus.PARSING,
-            RagDocumentStatus.CHUNKING,
-            RagDocumentStatus.EMBEDDING,
-            RagDocumentStatus.READY,
-          ],
+          not: RagDocumentStatus.FAILED,
         },
       },
       select: {
         id: true,
         status: true,
+        isActive: true,
       },
       orderBy: { createdAt: 'desc' },
     });
 
     if (existing) {
       throw new ConflictException({
-        message: 'File đã tồn tại trong kho tri thức RAG.',
+        message: 'File này đã từng được import vào kho tri thức RAG.',
         existingDocumentId: existing.id,
         existingStatus: existing.status,
+        existingIsActive: existing.isActive,
       });
     }
   }
@@ -895,7 +936,7 @@ export class RagIngestionService {
           const tokenCount = this.estimateTokenCount(chunk.content);
 
           this.logger.log(
-            `documentId=${documentId} status=EMBEDDING chunkIndex=${index}`,
+            `RAG đang tạo embedding documentId=${documentId}, chunkIndex=${index}`,
           );
 
           //tạo embedding và Biến text thành vector embedding
@@ -1131,7 +1172,7 @@ export class RagIngestionService {
     //kiểm tra kiểu file
     const fileType = this.ragFileParserService.inferFileType(file);
 
-    await this.ensureNoActiveDuplicate(checksum);
+    await this.ensureNoExistingDuplicate(checksum);
 
     // Chặn PDF scan/ảnh trước khi upload R2 và trước khi tạo RagDocument.
     await this.validateFileBeforeStorage(file, fileType);
@@ -1180,6 +1221,9 @@ export class RagIngestionService {
         },
       });
 
+      this.logger.log(
+        `RAG chuyển trạng thái documentId=${createdDocument.id} sang UPLOADED`,
+      );
       await this.scheduleImportedDocumentProcessing(createdDocument.id);
 
       return {
