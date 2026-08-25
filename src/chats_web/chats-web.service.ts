@@ -254,9 +254,9 @@ export class ChatsWebService {
           ? nextState.canBook
           : risk === 'RED';
 
-      if (!canBook || risk !== 'RED') {
+      if (!canBook) {
         throw new BadRequestException(
-          'Phiên tư vấn này chưa đủ điều kiện gọi thợ. Chỉ cho phép đặt thợ khi AI đánh giá rủi ro cao.',
+          'Phiên tư vấn này chưa đủ điều kiện gọi thợ. Hãy tiếp tục trao đổi cho đến khi AI xác nhận có thể chuyển sang bước đặt thợ.',
         );
       }
     }
