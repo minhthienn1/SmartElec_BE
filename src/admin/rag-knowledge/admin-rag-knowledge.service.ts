@@ -130,8 +130,8 @@ export class AdminRagKnowledgeService {
         this.prisma.ragDocument.findMany({
           where: {
             source: {
-              startsWith: 'CHAT_SESSION:'
-            }
+              startsWith: 'CHAT_SESSION:',
+            },
           },
           select: { id: true, source: true },
         }),
@@ -144,26 +144,65 @@ export class AdminRagKnowledgeService {
         .map((document) => [document.source as string, document.id]),
     );
 
+    // Lấy tất cả sessionId đã được import vào RAG để đảm bảo luôn xuất hiện khi lọc "Đã import"
+    const importedSessionIds = importedDocuments
+      .map((doc) => {
+        const match = doc.source?.match(/^CHAT_SESSION:(\d+)$/);
+        return match ? parseInt(match[1], 10) : null;
+      })
+      .filter((id): id is number => id !== null);
+
+    const importedSessions =
+      importedSessionIds.length > 0
+        ? await this.prisma.chatSession.findMany({
+            where: { id: { in: importedSessionIds } },
+            select: this.getConversationSelect(),
+          })
+        : [];
+
+    const importedCandidates = importedSessions.map((session) =>
+      this.mapConversationCandidate({
+        session: { ...session, aiLogs: [] },
+        type: 'CUSTOMER_5_STAR',
+        sourceType: RagConversationImportSource.CUSTOMER_REVIEW,
+        customerRating: (session as any).reviews?.[0]?.rating ?? null,
+        aiScore: null,
+        aiConclusion: false,
+        evidenceLabel: 'Đã import vào kho tri thức RAG',
+        evidenceNote: null,
+        evaluatedAt: session.updatedAt,
+      }),
+    );
+
+    // Gộp tất cả candidate và khử trùng lặp theo sessionId
+    const candidateMap = new Map<number, any>();
+    for (const c of [...reviewCandidates, ...aiCandidates, ...importedCandidates]) {
+      if (!candidateMap.has(c.sessionId)) {
+        candidateMap.set(c.sessionId, c);
+      }
+    }
+
     //filter theo type và search keyword
     const keyword = query.search?.trim().toLowerCase();
     const type = query.type?.trim();
 
-    //sử dụng spread gộp 2 lại với nhau 
-    return [...reviewCandidates, ...aiCandidates]
-      //Duyệt qua từng phần tử trong mảng và tạo ra một phần tử mới tương ứng
+    return Array.from(candidateMap.values())
       .map((candidate) => ({
         ...candidate,
         importedDocumentId:
           importedMap.get(`CHAT_SESSION:${candidate.sessionId}`) ?? null,
         alreadyImported:
-          //hàm .has() không lấy document ID nó hỏi xem Key này có tồn tại trong Map không ( true / false )
-          importedMap.has(
-            `CHAT_SESSION:${candidate.sessionId}`
-          ),
+          importedMap.has(`CHAT_SESSION:${candidate.sessionId}`),
       }))
-
-      //filter theo kiểu type
-      .filter((candidate) => !type || type === 'ALL' || candidate.type === type)
+      .filter((candidate) => {
+        if (type === 'IMPORTED') {
+          return candidate.alreadyImported;
+        }
+        if (!type || type === 'ALL') {
+          return !candidate.alreadyImported;
+        }
+        return candidate.type === type && !candidate.alreadyImported;
+      })
       .filter((candidate) => {
         if (!keyword) return true;
 
