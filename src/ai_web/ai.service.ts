@@ -240,6 +240,40 @@ export class AiService {
     return this.aiConversationPersistenceService.saveFeedback(logId, feedback);
   }
 
+  async rateAiSession(
+    userId: number,
+    sessionId: number,
+    rating: number,
+    comment?: string,
+  ) {
+    const session = await this.prisma.chatSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, userId: true },
+    });
+
+    if (!session || session.userId !== userId) {
+      throw new HttpException(
+        'Không tìm thấy phiên tư vấn hoặc bạn không có quyền đánh giá.',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    await this.prisma.chatSession.update({
+      where: { id: sessionId },
+      data: {
+        aiRating: rating,
+        aiRatingComment: comment?.trim() || null,
+        aiRatedAt: new Date(),
+      },
+    });
+
+    this.logger.log(
+      `User #${userId} đã đánh giá phiên AI web #${sessionId}: ${rating} sao`,
+    );
+
+    return { success: true, rating };
+  }
+
   async getGoldenExamples(category: string, limit = 2) {
     // Lấy các reasoning log chất lượng cao theo nhóm thiết bị để tham chiếu khi cần.
     return this.aiConversationPersistenceService.getGoldenExamples(
