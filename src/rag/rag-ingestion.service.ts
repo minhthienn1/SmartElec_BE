@@ -666,6 +666,7 @@ export class RagIngestionService {
       //biến syntheticFile thành dạng có thể parse được và clean nội dung
       const parsed = await this.ragFileParserService.parse(syntheticFile);
       const cleanedText = this.ragTextCleanerService.clean(parsed.content);
+      this.ragTextCleanerService.assertEncodingQuality(cleanedText);
 
       //kiểm tra file text có rỗng ( trường hợp file rỗng trước và sau khi clean)
       if (!cleanedText.trim()) {
@@ -1114,6 +1115,7 @@ export class RagIngestionService {
 
     const parsed = await this.ragFileParserService.parse(file);
     const cleanedText = this.ragTextCleanerService.clean(parsed.content);
+    this.ragTextCleanerService.assertEncodingQuality(cleanedText);
 
     if (!cleanedText.trim()) {
       throw new BadRequestException(

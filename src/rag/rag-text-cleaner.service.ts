@@ -1,4 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
+
+const DEFAULT_MOJIBAKE_BLOCK_THRESHOLD = 0.15;
+const MIN_TEXT_LENGTH_FOR_ENCODING_CHECK = 120;
+const MOJIBAKE_PATTERN =
+  /�|Ã[\u00a0-\uffff]?|Â[^\sA-Za-zÀ-ỹ]|â[€€™€œ€¢€“”]|áº|á»|Æ|º|»/g;
 
 @Injectable()
 export class RagTextCleanerService {
@@ -22,6 +27,44 @@ export class RagTextCleanerService {
       .replace(/[ \t]{2,}/g, ' ')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
+  }
+
+  assertEncodingQuality(
+    text: string,
+    threshold = DEFAULT_MOJIBAKE_BLOCK_THRESHOLD,
+  ): void {
+    // Chặn tài liệu có tỷ lệ ký tự lỗi mã hóa quá cao để tránh tạo chunk/embedding bẩn.
+    const ratio = this.calculateMojibakeRatio(text);
+
+    if (ratio > threshold) {
+      throw new BadRequestException(
+        'Nội dung tài liệu có dấu hiệu lỗi mã hóa ký tự vượt quá 15%. Vui lòng kiểm tra lại file hoặc xuất lại dưới định dạng UTF-8 trước khi import.',
+      );
+    }
+  }
+
+  calculateMojibakeRatio(text: string): number {
+    // Tính tỷ lệ dấu hiệu mojibake trên phần text nhìn thấy, bỏ qua khoảng trắng.
+    if (!text) {
+      return 0;
+    }
+
+    const visibleText = text.replace(/\s+/g, '');
+    if (visibleText.length < MIN_TEXT_LENGTH_FOR_ENCODING_CHECK) {
+      // File quá ngắn dễ là model/mã lỗi kỹ thuật, không đủ dữ liệu để kết luận lỗi encoding.
+      return 0;
+    }
+
+    const matches = Array.from(
+      visibleText.matchAll(MOJIBAKE_PATTERN),
+      (match) => match[0],
+    );
+    const suspiciousChars = matches.reduce(
+      (total, match) => total + match.length,
+      0,
+    );
+
+    return suspiciousChars / visibleText.length;
   }
 
   private cleanLine(line: string): string {

@@ -8,6 +8,7 @@ type AiFeedback = 'LIKE' | 'DISLIKE' | null | undefined;
 //+ 2 nếu AI xác định thêm triệu chứng
 //+ 1 nếu xác định thêm risk
 //+ 1 nếu thu thêm context
+
 //+ 2 nếu phase hội thoại tiến triển
 //- 2 nếu state gần như không đổi
 //- 2 nếu AI hỏi lại thông tin đã biết
